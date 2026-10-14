@@ -1,0 +1,2137 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Agent Farm</title>
+  
+  <!-- Tailwind CSS -->
+  <script src="/vendor/tailwind.play.js"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            brand: {
+              50: '#eef2ff',
+              500: '#6366f1',
+              600: '#4f46e5',
+              700: '#4338ca',
+            }
+          }
+        }
+      }
+    }
+  </script>
+
+  <!-- FontAwesome Icons -->
+  <link rel="stylesheet" href="/vendor/fontawesome/css/all.min.css">
+  
+  <!-- xterm.js -->
+  <link rel="stylesheet" href="/vendor/xterm.min.css">
+  <script src="/vendor/xterm.min.js"></script>
+  <script src="/vendor/xterm-addon-fit.min.js"></script>
+  <script src="/vendor/xterm-addon-web-links.min.js"></script>
+
+  <!-- Vue.js 3 -->
+  <script src="/vendor/vue.global.prod.js"></script>
+
+  <style>
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: #0f172a; }
+    ::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: #475569; }
+    .xterm { padding: 4px; height: 100%; width: 100%; }
+    .xterm-viewport { overflow-y: auto !important; }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen flex flex-col font-sans selection:bg-indigo-500 selection:text-white">
+
+<div id="app" class="flex flex-col flex-1 h-screen overflow-hidden">
+  
+  <!-- ================= TOP HEADER ================= -->
+  <header class="h-14 border-b border-slate-800 bg-slate-900/90 backdrop-blur px-4 flex items-center justify-between shrink-0 z-20">
+    <div class="flex items-center space-x-6">
+      <div class="flex items-center space-x-3 cursor-pointer" @click="currentTab = 'studio'">
+        <div class="w-8 h-8 rounded-lg bg-gradient-to-tr from-indigo-600 to-sky-400 flex items-center justify-center shadow-lg shadow-indigo-500/20">
+          <i class="fa-solid fa-brain text-white text-base"></i>
+        </div>
+        <div>
+          <span class="font-bold text-base tracking-wide bg-gradient-to-r from-white via-indigo-200 to-sky-300 bg-clip-text text-transparent">Agent Farm</span>
+          <span class="ml-2 text-xs px-2 py-0.5 rounded-full bg-indigo-950 text-indigo-400 border border-indigo-800/60 font-mono">multi-account</span>
+        </div>
+      </div>
+
+      <!-- Navigation Tabs -->
+      <nav class="flex items-center space-x-1">
+        <button 
+          @click="currentTab = 'studio'" 
+          :class="currentTab === 'studio' ? 'bg-slate-800 text-indigo-400 border-indigo-500/30' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50 border-transparent'"
+          class="px-3.5 py-1.5 rounded-md text-xs font-medium border transition-all flex items-center space-x-2">
+          <i class="fa-solid fa-terminal"></i>
+          <span>Terminal Studio</span>
+          <span v-if="activeSessionsCount > 0" class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+        </button>
+
+        <button 
+          @click="currentTab = 'profiles'" 
+          :class="currentTab === 'profiles' ? 'bg-slate-800 text-indigo-400 border-indigo-500/30' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50 border-transparent'"
+          class="px-3.5 py-1.5 rounded-md text-xs font-medium border transition-all flex items-center space-x-2">
+          <i class="fa-solid fa-users-gear"></i>
+          <span>Tài Khoản Google</span>
+          <span class="text-[10px] px-1.5 py-0.2 rounded-full bg-slate-700 text-slate-300">{{ profiles.length }}</span>
+        </button>
+
+        <button 
+          @click="currentTab = 'worktrees'" 
+          :class="currentTab === 'worktrees' ? 'bg-slate-800 text-indigo-400 border-indigo-500/30' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50 border-transparent'"
+          class="px-3.5 py-1.5 rounded-md text-xs font-medium border transition-all flex items-center space-x-2">
+          <i class="fa-solid fa-code-branch"></i>
+          <span>Git Worktrees</span>
+        </button>
+      </nav>
+    </div>
+
+    <!-- Right Actions & System Stats -->
+    <div class="flex items-center space-x-3">
+      <!-- System stats badge -->
+      <div class="hidden lg:flex items-center space-x-3 px-3 py-1 bg-slate-950/60 rounded-md border border-slate-800 text-xs text-slate-400 font-mono">
+        <div class="flex items-center space-x-1.5">
+          <i class="fa-solid fa-microchip text-indigo-400"></i>
+          <span>CPU: {{ sysStats.cpu_percent }}%</span>
+        </div>
+        <div class="w-px h-3 bg-slate-800"></div>
+        <div class="flex items-center space-x-1.5">
+          <i class="fa-solid fa-memory text-sky-400"></i>
+          <span>RAM: {{ sysStats.ram_percent }}%</span>
+        </div>
+        <div class="w-px h-3 bg-slate-800"></div>
+        <div class="flex items-center space-x-1.5">
+          <i class="fa-solid fa-robot text-emerald-400"></i>
+          <span>AGY: {{ sysStats.running_agy_procs }}</span>
+        </div>
+      </div>
+
+      <!-- User Guide button -->
+      <button 
+        @click="showGuideModal = true; fetchDoctor()" 
+        class="px-3 py-1.5 bg-emerald-950/80 hover:bg-emerald-900 border border-emerald-700/80 text-emerald-300 rounded-md text-xs font-semibold flex items-center space-x-1.5 transition-all shadow-sm">
+        <i class="fa-solid fa-book-open"></i>
+        <span>Bắt đầu</span><span v-if="doctorProblems" class="ml-1.5 w-4 h-4 rounded-full bg-rose-600 text-white text-[10px] flex items-center justify-center">{{ doctorProblems }}</span>
+      </button>
+
+      <!-- Quick Launch button -->
+      <button 
+        @click="openLaunchModal()" 
+        class="px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-md text-xs font-semibold shadow-lg shadow-indigo-600/30 flex items-center space-x-2 transition-all">
+        <i class="fa-solid fa-play"></i>
+        <span>Terminal mới</span>
+      </button>
+
+      <!-- New Task button -->
+      <button 
+        @click="openTaskModal()" 
+        class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-md text-xs font-medium flex items-center space-x-1.5 transition-all">
+        <i class="fa-solid fa-plus text-indigo-400"></i>
+        <span>Task</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- ================= MAIN BODY VIEW ================= -->
+  <main class="flex-1 overflow-hidden relative">
+
+    <!-- TAB 2: TERMINAL STUDIO (MULTI-PANE XTERM) -->
+    <div v-show="currentTab === 'studio'" class="absolute inset-0 flex flex-col bg-slate-950">
+      
+      <!-- Studio Toolbar -->
+      <div class="h-11 border-b border-slate-800 bg-slate-900/60 px-4 flex items-center justify-between shrink-0">
+        <div class="flex items-center space-x-2">
+          <span class="text-xs font-semibold text-slate-300" title="Kích thước tất cả ô (rộng, cao và cỡ chữ đi cùng nhau)"><i class="fa-solid fa-up-right-and-down-left-from-center mr-1 text-indigo-400"></i>Kích thước</span>
+          <i class="fa-solid fa-minimize text-[10px] text-slate-500"></i>
+          <input type="range" min="300" max="1100" step="10" v-model.number="tileW" @input="onSizeInput()" class="w-44 accent-indigo-500" title="Kéo để chỉnh kích thước tất cả ô (rộng, cao, cỡ chữ đổi cùng nhau)">
+          <i class="fa-solid fa-maximize text-[10px] text-slate-500"></i>
+          <span class="text-[10px] font-mono text-slate-400 w-16">{{ tileW }}×{{ tileH }}</span>
+          <span class="mx-1 h-4 w-px bg-slate-700"></span>
+          <span class="text-xs font-semibold text-amber-300" title="Kích thước ô Orchestrator (chiều cao và cỡ chữ), chỉnh riêng với các ô worker"><i class="fa-solid fa-crown mr-1"></i>Orchestrator</span>
+          <input type="range" min="240" max="1000" step="10" v-model.number="orchH" @input="onSizeInput()" class="w-36 accent-amber-500" title="Kéo để chỉnh riêng ô Orchestrator">
+          <span class="text-[10px] font-mono text-slate-400 w-10">{{ orchH }}</span>
+        </div>
+
+        <div class="flex items-center space-x-2">
+          <div class="flex items-center space-x-1 bg-slate-800 p-0.5 rounded border" :class="syncEnabled ? 'border-fuchsia-500/70' : 'border-slate-700'">
+            <button @click="toggleSync()" :class="syncEnabled ? 'bg-fuchsia-600 text-white' : 'text-slate-300 hover:bg-slate-700'" class="px-2.5 py-0.5 rounded text-xs font-semibold" title="Gõ ở một ô đã chọn thì các ô đã chọn khác nhận y hệt">
+              <i class="fa-solid fa-link mr-1"></i>Đồng bộ gõ<span v-if="syncEnabled"> · {{ syncCount }} ô</span>
+            </button>
+            <template v-if="syncEnabled">
+              <button @click="syncSelectAll()" class="px-1.5 py-0.5 rounded text-[11px] text-slate-300 hover:bg-slate-700">Tất cả</button>
+              <button @click="syncSelectNone()" class="px-1.5 py-0.5 rounded text-[11px] text-slate-300 hover:bg-slate-700">Bỏ chọn</button>
+            </template>
+          </div>
+          <button @click="drawerOpen = !drawerOpen" :class="drawerOpen ? 'bg-emerald-600 text-white border-emerald-500' : 'bg-slate-800 text-emerald-300 border-slate-700 hover:bg-slate-700'" class="px-2.5 py-1 rounded text-xs font-medium border shadow-sm">
+            <i class="fa-solid fa-list-check mr-1"></i> Điều phối <span class="ml-1 px-1.5 rounded-full bg-black/30 text-[10px]">{{ tasks.filter(t => t.stage !== 'done').length }}</span>
+          </button>
+        </div>
+      </div>
+
+      <div v-if="duplicateEmailWorkers.length" class="mx-2 mt-2 bg-rose-950/60 border border-rose-700 rounded-lg px-4 py-2 text-xs text-rose-200 flex items-start space-x-2 shrink-0">
+        <i class="fa-solid fa-triangle-exclamation mt-0.5"></i>
+        <span>Nhiều account đang trùng cùng một email Google ({{ duplicateEmailWorkers.map(w => w.profile_id).join(', ') }}). Hãy Re-Auth ở tab Tài Khoản để mỗi account một Google riêng.</span>
+      </div>
+
+      <!-- Terminals Grid Container -->
+      <div id="studio-scroll" class="flex-1 min-h-0 overflow-y-auto overflow-x-hidden p-3 relative">
+      <div id="studio-grid" class="flex flex-wrap content-start gap-3">
+        <div 
+          v-for="idx in visiblePaneIdxs" 
+          :key="idx" 
+          @click="focusPane(idx)"
+          @mousedown="focusPane(idx)"
+          @dragover.prevent="dragOverIdx = idx"
+          @dragleave="dragOverIdx === idx && (dragOverIdx = null)"
+          @drop.prevent="onPaneDrop(idx)"
+          :style="paneGridStyle(idx)"
+          :class="[dragOverIdx === idx && dragPaneIdx !== null && dragPaneIdx !== idx ? 'border-emerald-400 ring-2 ring-emerald-400' : (focusedPaneIdx === idx ? (idx === 0 ? 'border-amber-400 ring-2 ring-amber-400/70' : 'border-indigo-400 ring-2 ring-indigo-500/70') : (syncEnabled && syncMembers[idx] ? 'border-fuchsia-500/80 ring-1 ring-fuchsia-500/50' : (idx === 0 ? 'border-amber-500/40' : 'border-slate-800')))]"
+          class="flex flex-col bg-slate-900 rounded-lg border overflow-hidden relative shadow-md">
+          
+          <!-- Pane Header -->
+          <div @dblclick.self="toggleMaximize(idx)" class="h-8 bg-slate-800/90 border-b border-slate-700/80 px-2.5 flex items-center justify-between text-xs shrink-0 select-none whitespace-nowrap overflow-hidden">
+            <div class="flex items-center space-x-2 min-w-0 flex-1">
+              <span draggable="true" @dragstart="onPaneDragStart(idx, $event)" @dragend="dragPaneIdx = null; dragOverIdx = null"
+                    class="cursor-grab active:cursor-grabbing text-slate-500 hover:text-slate-200 px-1" title="Kéo thả sang ô khác để đổi chỗ. Kéo vào ô Orchestrator để giao quyền Orchestrator.">
+                <i class="fa-solid fa-grip-vertical"></i>
+              </span>
+              <span v-if="idx === 0" class="px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/50 text-[10px] font-bold uppercase flex items-center space-x-1"><i class="fa-solid fa-crown"></i><span>Orchestrator</span></span>
+              <select v-else-if="paneProfileId(idx) && /^acc/.test(paneProfileId(idx))" :value="paneRole(idx)" @change="setPaneRole(idx, $event.target.value)" @click.stop
+                      class="bg-slate-900 text-sky-300 border border-slate-700 rounded px-1.5 py-0.5 text-[10px] font-semibold max-w-[130px]" title="Đổi vai trò của account này">
+                <option v-for="r in roleOptionsFor(idx)" :key="r" :value="r">{{ r }}</option>
+              </select>
+              <span v-if="paneProfileId(idx) && (paneProfileId(idx) === 'claude' || /^acc/.test(paneProfileId(idx)))" class="text-[10px] px-1.5 py-0.5 rounded-full border" :class="stateClass(paneState(idx))">{{ stateText(paneState(idx)) }}</span>
+              <label v-if="syncEnabled && idx !== 0" class="flex items-center space-x-1 text-[10px] text-fuchsia-300 cursor-pointer" title="Ô này tham gia đồng bộ gõ" @click.stop>
+                <input type="checkbox" :checked="!!syncMembers[idx]" @change="toggleSyncMember(idx)" class="accent-fuchsia-500"><span class="hidden xl:inline">sync</span>
+              </label>
+              <span v-if="focusedPaneIdx === idx" class="text-[10px] px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-200 border border-indigo-500/40 hidden lg:inline" title="Phím bạn gõ đang vào ô này"><i class="fa-solid fa-keyboard mr-1"></i>nhận phím</span>
+              <span class="w-2 h-2 rounded-full" :class="getPaneSession(panes[idx].sessionId)?.status === 'running' ? 'bg-emerald-500 animate-pulse' : 'bg-slate-500'"></span>
+              <select 
+                :value="panes[idx].sessionId" 
+                @change="onPaneSelect(idx, $event)"
+                class="bg-slate-900 text-slate-200 border border-slate-700 rounded px-2 py-0.5 text-xs font-medium focus:outline-none focus:border-indigo-500 max-w-[240px] min-w-0 truncate">
+                <option value="">-- Chọn / tạo terminal --</option>
+                <optgroup label="Đang có">
+                  <option v-for="s in sessions" :key="s.session_id" :value="s.session_id">
+                    [{{ s.profile_id === 'claude' ? 'Claude Code' : (workerNameOf(s.profile_id) + ' • ' + getProfileEmail(s.profile_id)) }}] {{ s.name }} ({{ s.status }})
+                  </option>
+                </optgroup>
+                <optgroup label="＋ Tạo terminal mới">
+                  <option v-for="o in accountOptions" :key="'n' + o.id" :value="'new:' + o.id">＋ {{ o.label }}</option>
+                </optgroup>
+                <optgroup label="🔑 Đăng nhập / đăng nhập lại">
+                  <option v-if="idx === 0" value="login:claude">🔑 Claude Code (/login)</option>
+                  <option v-for="p in profiles" :key="'l' + p.id" :value="'login:' + p.id">🔑 {{ p.name }} · {{ p.email }} (agy)</option>
+                </optgroup>
+              </select>
+              <template v-if="idx === 0 && panes[0].sessionId">
+                <span v-if="paneProfileId(0) === 'claude' && claude.auth && claude.auth.logged_in === false" class="flex items-center space-x-1.5">
+                  <span class="text-[10px] text-rose-300">Chưa đăng nhập</span>
+                  <button @click.stop="claudeLogin()" class="px-2 py-0.5 bg-orange-600 hover:bg-orange-500 text-white rounded text-[11px] font-semibold">Đăng nhập</button>
+                </span>
+                <span v-else class="text-[11px] text-slate-300 truncate max-w-[260px]" :title="orchestratorIdentity.title">
+                  <i class="fa-solid fa-user-check text-emerald-400 mr-1"></i>{{ orchestratorIdentity.text }}
+                </span>
+              </template>
+            </div>
+
+            <div class="flex items-center space-x-2 shrink-0 ml-2">
+              <button @click.stop="toggleMaximize(idx)" :title="maximizedIdx === idx ? 'Thu nhỏ về bố cục thường' : 'Phóng to ô này (double-click thanh tiêu đề cũng được)'" class="text-slate-400 hover:text-white px-1.5 py-0.5 rounded hover:bg-slate-700">
+                <i :class="maximizedIdx === idx ? 'fa-solid fa-compress' : 'fa-solid fa-expand'" class="text-xs"></i>
+              </button>
+              <button 
+                v-if="panes[idx].sessionId" 
+                @click.stop="detachPane(idx)" 
+                title="Ẩn ô này (terminal vẫn chạy ngầm; chọn lại trong danh sách session ở ô khác để hiện)" 
+                class="bg-slate-700 hover:bg-slate-600 text-slate-300 px-2 py-0.5 rounded text-[11px] font-medium transition-all">
+                <i class="fa-solid fa-minus text-xs mr-0.5"></i>
+                <span v-if="idx === 0" class="whitespace-nowrap">Gỡ ô</span>
+              </button>
+              <button 
+                v-if="panes[idx].sessionId" 
+                @click.stop="killSession(panes[idx].sessionId)" 
+                title="Tắt và dừng hẳn session terminal này" 
+                class="bg-rose-950/60 hover:bg-rose-600 text-rose-300 hover:text-white border border-rose-800/80 px-2 py-0.5 rounded text-[11px] font-semibold flex items-center space-x-1 transition-all">
+                <i class="fa-solid fa-power-off text-xs"></i>
+                <span v-if="idx === 0" class="whitespace-nowrap">Dừng</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- xterm.js container -->
+          <div :id="'term-container-' + idx" @click="focusPane(idx)" @mousedown="focusPane(idx)" class="flex-1 bg-black overflow-hidden relative cursor-text">
+            <div v-if="!panes[idx].sessionId" class="absolute inset-0 z-10 flex flex-col items-center justify-center text-slate-500 p-4 text-center">
+              <template v-if="idx === 0">
+                <i class="fa-solid fa-crown text-4xl mb-3 text-amber-400/70"></i>
+                <p class="text-sm text-slate-300 mb-1">Ô Orchestrator đang trống</p>
+                <p class="text-xs mb-3 max-w-md">Orchestrator nhận mục tiêu của bạn, chia việc và giao cho các worker bên dưới.</p>
+                <button @click.stop="startClaudeOrchestrator()" class="px-4 py-2 bg-orange-600 hover:bg-orange-500 text-white rounded-lg text-xs font-bold shadow-lg"><i class="fa-solid fa-terminal mr-1.5"></i>Khởi chạy Claude Code làm Orchestrator</button>
+                <p class="text-[11px] mt-3">Chưa đăng nhập? Mở danh sách phía trên: <b>🔑 Đăng nhập</b> hoặc <b>＋ Tạo terminal mới</b> (Claude hay một account agy).<br>Cũng có thể kéo (<i class="fa-solid fa-grip-vertical"></i>) một worker lên đây để giao quyền.</p>
+              </template>
+              <template v-else>
+                <i class="fa-solid fa-terminal text-3xl mb-2 opacity-40"></i>
+                <p class="text-xs mb-2">Chưa gắn session</p>
+              </template>
+            </div>
+
+            <!-- Stopped Session Banner -->
+            <div v-if="panes[idx].sessionId && getPaneSession(panes[idx].sessionId)?.status === 'stopped'" class="absolute bottom-2 left-2 right-2 bg-slate-900/95 border border-amber-600/70 rounded-lg p-2.5 flex items-center justify-between text-xs text-amber-200 z-10 backdrop-blur shadow-2xl">
+              <div class="flex items-center space-x-2">
+                <i class="fa-solid fa-circle-exclamation text-amber-400 text-sm"></i>
+                <div>
+                  <span class="font-bold text-slate-100">Session đã dừng</span>
+                  <span class="text-slate-400 ml-1">(Exit code: {{ getPaneSession(panes[idx].sessionId)?.exit_code ?? 0 }})</span>
+                  <p class="text-[11px] text-slate-400">Keystrokes sẽ không có tác dụng cho đến khi phiên được bật lại.</p>
+                </div>
+              </div>
+              <div class="flex items-center space-x-1.5 shrink-0">
+                <button @click.stop="restartPaneSession(idx)" class="px-3 py-1 bg-amber-600 hover:bg-amber-500 text-white rounded text-xs font-semibold flex items-center space-x-1.5 shadow transition-all">
+                  <i class="fa-solid fa-rotate-right"></i>
+                  <span>Khởi Động Lại</span>
+                </button>
+                <button @click.stop="detachPane(idx)" class="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 rounded text-xs">
+                  Gỡ ô
+                </button>
+              </div>
+            </div>
+          </div>
+
+        </div>
+        <!-- Add-terminal tile -->
+        <button v-if="maximizedIdx === null" @click="openLaunchModal()" :style="{ width: tileW + 'px', maxWidth: '100%', height: tileH + 'px' }" class="border-2 border-dashed border-slate-700 hover:border-indigo-500 hover:bg-slate-900/60 rounded-lg text-slate-500 hover:text-indigo-300 flex flex-col items-center justify-center transition-colors">
+          <i class="fa-solid fa-plus text-2xl mb-1"></i>
+          <span class="text-xs font-semibold">Terminal mới</span>
+          <span class="text-[10px] mt-0.5 opacity-70">cùng account vẫn mở thêm được</span>
+        </button>
+      </div>
+      </div>
+
+      <!-- Dispatch drawer: assign work / log / progress -->
+      <div v-if="drawerOpen" class="h-72 shrink-0 border-t border-slate-700 bg-slate-950 flex flex-col">
+        <div class="h-9 px-3 flex items-center justify-between border-b border-slate-800 bg-slate-900/80 shrink-0">
+          <div class="flex items-center space-x-1">
+            <button v-for="t in drawerTabs" :key="t.key" @click="drawerTab = t.key" :class="drawerTab === t.key ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white'" class="px-3 py-1 rounded text-xs font-semibold">{{ t.label }}</button>
+          </div>
+          <button @click="drawerOpen = false" class="text-slate-500 hover:text-white"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+        <div class="flex-1 overflow-y-auto p-3 space-y-3">
+          <div v-show="drawerTab === 'assign'" class="space-y-3">
+      <!-- Plan builder -->
+      <div class="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-3">
+        <div class="flex items-center justify-between border-b border-slate-800 pb-2">
+          <h3 class="text-sm font-bold text-slate-100 flex items-center space-x-2"><i class="fa-solid fa-list-check text-emerald-400"></i><span>Mục tiêu & Kế hoạch giao việc</span></h3>
+          <span class="text-[11px] text-slate-400">Mỗi worker nhận tối đa 1 việc mỗi lượt phát lệnh</span>
+        </div>
+        <input v-model="ccGoal" type="text" placeholder="Mục tiêu tổng (ví dụ: Thêm đăng nhập OAuth cho module X)" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-100 focus:outline-none focus:border-emerald-500">
+        <input v-model="ccCwd" type="text" placeholder="Thư mục làm việc chung" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-100 font-mono focus:outline-none focus:border-emerald-500">
+
+        <div v-if="!ccItems.length" class="text-center text-xs text-slate-500 py-6 border border-dashed border-slate-700 rounded-lg">
+          Chưa có việc nào. Bấm "Thêm việc", hoặc nhờ Claude Orchestrator tách mục tiêu rồi dán kế hoạch vào đây.
+        </div>
+
+        <div v-for="(it, idx) in ccItems" :key="idx" class="bg-slate-950 border rounded-lg p-3 grid grid-cols-1 md:grid-cols-12 gap-2"
+             :class="ccItemConflict(it, idx) ? 'border-rose-700' : 'border-slate-800'">
+          <div class="md:col-span-3 space-y-1.5">
+            <select v-model="it.profile_id" class="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-xs text-slate-100">
+              <option v-for="w in ccAssignableWorkers" :key="w.profile_id" :value="w.profile_id">{{ workerLabel(w) }}</option>
+            </select>
+            <div class="flex items-center gap-1.5">
+              <span class="text-[10px] px-1.5 py-0.5 rounded-full border" :class="stateClass(workerById(it.profile_id)?.state)">{{ stateText(workerById(it.profile_id)?.state) }}</span>
+              <select v-model="it.mode" class="flex-1 bg-slate-900 border border-slate-700 rounded px-1.5 py-1 text-[11px] text-slate-200">
+                <option value="plan">plan</option><option value="accept-edits">accept-edits</option><option value="interactive">interactive</option>
+              </select>
+            </div>
+            <div v-if="ccItemConflict(it, idx)" class="text-[10px] text-rose-300">Worker này đã có việc khác trong kế hoạch</div>
+          </div>
+          <div class="md:col-span-8 space-y-1.5">
+            <input v-model="it.title" type="text" placeholder="Tiêu đề việc" class="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-xs text-slate-100">
+            <textarea v-model="it.prompt" rows="3" placeholder="Prompt đầy đủ cho worker: mục tiêu, file liên quan, tiêu chí hoàn thành, 'kết thúc bằng dòng RESULT: ...'" class="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-xs text-slate-100 font-mono"></textarea>
+          </div>
+          <div class="md:col-span-1 flex md:flex-col justify-end items-end">
+            <button @click="ccRemoveItem(idx)" class="text-rose-400 hover:text-rose-300 p-1" title="Xoá"><i class="fa-solid fa-trash"></i></button>
+          </div>
+        </div>
+
+        <div class="flex items-center justify-between pt-1">
+          <button @click="ccAddItem()" class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-indigo-300 border border-slate-700 rounded-lg text-xs"><i class="fa-solid fa-plus mr-1"></i>Thêm việc</button>
+          <button @click="ccRunPlan()" :disabled="isRunningPlan || !ccPlanValid" class="px-5 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white rounded-lg text-xs font-bold shadow-lg shadow-emerald-600/30">
+            <i class="fa-solid fa-rocket mr-1.5"></i>{{ isRunningPlan ? 'Đang phát lệnh...' : 'Duyệt & Phát lệnh (' + ccItems.length + ')' }}
+          </button>
+        </div>
+      </div>
+
+          </div>
+          <div v-show="drawerTab === 'progress'">
+      <!-- Task progress (formerly Kanban) -->
+      <div class="bg-slate-900 border border-slate-800 rounded-xl p-4">
+        <div class="flex items-center justify-between mb-2">
+          <h3 class="text-sm font-bold text-slate-100 flex items-center space-x-2"><i class="fa-solid fa-table-columns text-indigo-400"></i><span>Tiến độ công việc</span></h3>
+          <button @click="openTaskModal()" class="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 rounded text-[11px]"><i class="fa-solid fa-plus mr-1"></i>Thêm task</button>
+        </div>
+        <div class="grid grid-cols-2 md:grid-cols-5 gap-2">
+          <div v-for="col in progressColumns" :key="col.key" class="bg-slate-950 rounded-lg p-2 min-h-[72px]">
+            <div class="text-[10px] font-bold uppercase mb-1.5" :class="col.cls">{{ col.label }} <span class="text-slate-500">({{ getTasksByStage(col.key).length }})</span></div>
+            <div v-for="t in getTasksByStage(col.key)" :key="t.id" class="bg-slate-900 border border-slate-800 rounded p-1.5 mb-1.5 text-[11px]">
+              <div class="text-slate-200 leading-tight" :title="t.description">{{ t.title }}</div>
+              <div class="flex items-center justify-between mt-1">
+                <span class="text-indigo-300 font-mono text-[10px]">{{ workerNameOf(t.assigned_profile) }}</span>
+                <span class="space-x-1.5">
+                  <button v-if="col.next" @click="moveTaskStage(t, col.next)" class="text-slate-400 hover:text-emerald-300" title="Chuyển bước tiếp"><i class="fa-solid fa-arrow-right"></i></button>
+                  <button @click="deleteTask(t.id)" class="text-slate-500 hover:text-rose-400" title="Xoá"><i class="fa-solid fa-trash"></i></button>
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+          </div>
+          <div v-show="drawerTab === 'log'">
+      <!-- Dispatch log -->
+      <div class="bg-slate-900 border border-slate-800 rounded-xl p-4">
+        <h3 class="text-sm font-bold text-slate-100 mb-2 flex items-center space-x-2"><i class="fa-solid fa-clock-rotate-left text-purple-400"></i><span>Nhật ký giao việc & kết quả</span></h3>
+        <div v-if="!ccLog.length" class="text-xs text-slate-500 py-3">Chưa có lệnh nào được gửi.</div>
+        <div v-for="e in ccLog" :key="e.id" class="border-t border-slate-800 py-2">
+          <div class="flex items-center justify-between gap-2">
+            <div class="min-w-0 text-xs">
+              <span class="font-mono text-slate-500">{{ formatLogTime(e.ts) }}</span>
+              <span class="ml-2 font-semibold text-indigo-300">{{ workerNameOf(e.profile_id) }}</span>
+              <span class="ml-2 text-slate-200">{{ e.title }}</span>
+              <span class="ml-2 text-[10px] px-1.5 py-0.5 rounded-full border" :class="e.status === 'sent' ? 'text-emerald-300 border-emerald-700' : 'text-rose-300 border-rose-700'">{{ e.status }}</span>
+            </div>
+            <div class="shrink-0 space-x-1">
+              <button @click="ccCollect(e)" class="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-sky-300 border border-slate-700 rounded text-[11px]">Lấy kết quả</button>
+              <button @click="e._open = !e._open" class="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 rounded text-[11px]">{{ e._open ? 'Ẩn' : 'Chi tiết' }}</button>
+            </div>
+          </div>
+          <div v-if="e._open" class="mt-2 space-y-1.5">
+            <div class="text-[11px] text-slate-400">Prompt:</div>
+            <pre class="bg-slate-950 border border-slate-800 rounded p-2 text-[11px] text-slate-300 whitespace-pre-wrap font-mono">{{ e.prompt }}</pre>
+            <div v-if="e.result" class="text-[11px] text-slate-400">Kết quả (chụp {{ formatLogTime(e.collected_at) }}, trạng thái worker: {{ stateText(e.state_at_collect) }}):</div>
+            <pre v-if="e.result" class="bg-black border border-slate-800 rounded p-2 text-[11px] text-emerald-200 whitespace-pre-wrap font-mono max-h-64 overflow-y-auto">{{ e.result }}</pre>
+          </div>
+        </div>
+      </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Bottom Interactive Command & Chat Dispatch Bar for Focused Pane -->
+      <div class="h-12 border-t border-slate-800 bg-slate-900/90 px-4 flex items-center justify-between shrink-0 space-x-3 z-10">
+        <div class="flex items-center space-x-2 shrink-0">
+          <span class="text-xs font-semibold text-slate-300 flex items-center space-x-1.5">
+            <i class="fa-solid fa-terminal text-indigo-400"></i>
+            <span>Gửi lệnh vào:</span>
+          </span>
+          <span v-if="imeWarn" class="px-2 py-0.5 rounded bg-amber-950 text-amber-300 border border-amber-600 text-[11px] font-semibold" title="Bộ gõ (Unikey/Bamboo/Fcitx...) đang ghép chữ. Telex biến s/f/r/x/j/w thành dấu nên /usage có thể thành /úage. Chuyển bộ gõ sang tiếng Anh khi gõ lệnh, hoặc dùng các nút /lệnh ở thanh dưới.">
+            <i class="fa-solid fa-language mr-1"></i>Bộ gõ tiếng Việt đang bật — lệnh có thể bị biến dạng
+          </span>
+          <span class="px-2 py-0.5 rounded bg-indigo-950 text-indigo-300 border border-indigo-800 font-mono text-xs font-bold">
+            {{ focusedPaneIdx === 0 ? 'Orchestrator' : 'Worker ' + focusedPaneIdx }}{{ syncEnabled && syncMembers[focusedPaneIdx] ? ' +' + (syncCount - 1) + ' ô sync' : '' }}: {{ panes[focusedPaneIdx]?.sessionId ? (getPaneSession(panes[focusedPaneIdx].sessionId)?.profile_id === 'claude' ? 'Claude Code' : workerNameOf(getPaneSession(panes[focusedPaneIdx].sessionId)?.profile_id)) : 'Chưa gắn' }}
+          </span>
+        </div>
+
+        <span class="hidden 2xl:inline-flex items-center space-x-1 text-[10px] text-slate-500 shrink-0" title="Những phím terminal vừa gửi đi. Nếu bạn gõ /usage mà ở đây không thấy / u s a g e thì bộ gõ hoặc trình duyệt đã đổi chữ trước khi tới terminal.">
+          <i class="fa-solid fa-keyboard"></i><span class="font-mono text-slate-300 max-w-[200px] truncate">{{ lastKeys.length ? lastKeys.join(' ') : '—' }}</span>
+        </span>
+
+        <!-- Quick Slash Command Pills -->
+        <div class="hidden xl:flex items-center space-x-1 shrink-0">
+          <button @click="sendQuickKey('\x03')" title="Gửi Ctrl+C vào ô đang chọn" class="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-amber-300 rounded text-xs font-mono border border-slate-700">Ctrl+C</button>
+          <button @click="sendQuickKey('\x1b')" title="Gửi Esc vào ô đang chọn" class="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-xs font-mono border border-slate-700">Esc</button>
+          <span class="text-slate-700">|</span>
+          <button @click="executeSlashCommand('/help')" class="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-xs font-mono border border-slate-700 transition-colors">/help</button>
+          <button @click="executeSlashCommand('/usage')" class="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-amber-300 rounded text-xs font-mono border border-slate-700 transition-colors">/usage</button>
+          <button @click="executeSlashCommand('/model')" class="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-sky-300 rounded text-xs font-mono border border-slate-700 transition-colors">/model</button>
+          <button @click="executeSlashCommand('/clear')" class="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-xs font-mono border border-slate-700 transition-colors">/clear</button>
+          <button @click="executeSlashCommand('/compact')" class="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-indigo-300 rounded text-xs font-mono border border-slate-700 transition-colors">/compact</button>
+          <button @click="executeSlashCommand('/quit')" class="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-rose-300 rounded text-xs font-mono border border-slate-700 transition-colors">/quit</button>
+        </div>
+
+        <!-- Input Bar with Send Button -->
+        <div class="flex-1 flex items-center space-x-2 max-w-2xl">
+          <div class="relative flex-1">
+            <input 
+              v-model="terminalInputText" 
+              @keydown.enter.prevent="sendTerminalInput" 
+              type="text" 
+              placeholder="Soạn prompt tại đây (gõ tiếng Việt có dấu ổn định hơn gõ thẳng vào terminal), Enter để gửi vào ô đang chọn..." 
+              class="w-full bg-slate-950 border border-slate-700 rounded-md px-3 py-1.5 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 font-mono">
+          </div>
+          <button 
+            @click="sendTerminalInput" 
+            :disabled="!panes[focusedPaneIdx]?.sessionId" 
+            class="px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-md text-xs font-semibold flex items-center space-x-1.5 shadow-md shrink-0 transition-all">
+            <i class="fa-solid fa-paper-plane text-[11px]"></i>
+            <span>Gửi (Enter)</span>
+          </button>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- TAB 3: PROFILES MANAGER (HIỂN THỊ RÕ GOOGLE EMAIL) -->
+    <div v-show="currentTab === 'profiles'" class="h-full p-6 overflow-y-auto max-w-6xl mx-auto">
+      <div class="flex items-center justify-between mb-6">
+        <div>
+          <h2 class="text-lg font-bold text-slate-100 flex items-center space-x-2">
+            <i class="fa-solid fa-users text-indigo-400"></i>
+            <span>Tài khoản agy (mỗi tài khoản Google một kho token riêng)</span>
+          </h2>
+          <p class="text-xs text-slate-400 mt-1">Mỗi tài khoản được cô lập hoàn toàn Keyring D-Bus và Token riêng biệt tại <code class="text-slate-300 font-mono">~/.agy_profiles/accN/</code>.</p>
+        </div>
+        <div class="flex items-center space-x-2">
+          <button @click="showGuideModal = true; fetchDoctor()" class="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-emerald-400 border border-slate-700 rounded-md text-xs font-medium">
+            <i class="fa-solid fa-circle-question mr-1"></i> Xem hướng dẫn
+          </button>
+          <button @click="openNewProfileModal()" class="px-3.5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-md text-xs font-semibold shadow-md flex items-center space-x-2">
+            <i class="fa-solid fa-user-plus"></i>
+            <span>Thêm Profile Mới</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Claude Code (orchestrator) - not a Google/agy account -->
+      <div class="mb-4 bg-gradient-to-r from-orange-950/40 to-slate-900 border border-orange-700/50 rounded-xl p-4 flex flex-col md:flex-row md:items-center justify-between gap-3">
+        <div class="flex items-center space-x-3">
+          <div class="w-10 h-10 rounded-lg bg-gradient-to-tr from-orange-500 to-amber-400 flex items-center justify-center text-white"><i class="fa-solid fa-crown"></i></div>
+          <div>
+            <div class="text-sm font-bold text-slate-100">Claude Code <span class="text-[10px] px-1.5 py-0.5 rounded-full border ml-1" :class="stateClass(claude.state)">{{ stateText(claude.state) }}</span></div>
+            <div class="text-[11px] text-slate-400 max-w-2xl"><template v-if="claudeEmail"><b class="text-slate-200 font-mono">{{ claudeEmail }}</b><span v-if="claude.auth && claude.auth.plan"> · gói {{ claude.auth.plan }}</span>. </template>Đăng nhập tài khoản Claude (Anthropic) của máy này, lưu ở <code class="font-mono text-slate-300">~/.claude</code>. <template v-if="claudeSharesWith">Cùng email với <b>{{ claudeSharesWith.name }}</b> ({{ claudeSharesWith.id }}) nhưng là dịch vụ khác (Claude so với Gemini/agy) nên token và quota hoàn toàn riêng, không xung đột. </template>Muốn đăng nhập lại Claude: mở terminal Claude rồi chọn <b>🔑 Claude Code (/login)</b> trong danh sách ô Orchestrator.</div>
+          </div>
+        </div>
+        <button @click="startClaudeOrchestrator()" class="px-3 py-1.5 bg-orange-600 hover:bg-orange-500 text-white rounded-lg text-xs font-semibold shrink-0"><i class="fa-solid fa-terminal mr-1.5"></i>{{ claude.status === 'running' ? 'Mở trong Studio' : 'Khởi chạy Claude' }}</button>
+      </div>
+
+      <!-- Profiles Grid -->
+      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        <div v-for="prof in profiles" :key="prof.id" class="bg-slate-900 border border-slate-800 rounded-xl p-4 shadow-sm hover:border-slate-700 transition-all flex flex-col justify-between">
+          <div>
+            <!-- Header card with Avatar and Google Email -->
+            <div class="flex items-start justify-between">
+              <div class="flex items-start space-x-3">
+                <div class="w-10 h-10 rounded-lg bg-indigo-950 border border-indigo-800 flex items-center justify-center font-bold font-mono text-indigo-300 text-sm shrink-0 shadow-inner">
+                  {{ prof.id.replace('acc', 'A') }}
+                </div>
+                <div class="min-w-0">
+                  <div class="flex items-center space-x-1.5">
+                    <h3 class="text-sm font-bold text-slate-100 truncate">{{ prof.name }}</h3>
+                    <span class="text-[10px] px-1.5 py-0.2 rounded bg-slate-800 text-slate-400 font-mono">{{ prof.id }}</span>
+                  </div>
+                  <!-- Google Email hiển thị rõ ràng -->
+                  <div class="flex items-center space-x-1.5 text-xs text-sky-400 font-semibold mt-0.5 truncate">
+                    <i class="fa-brands fa-google text-red-400 text-xs shrink-0"></i>
+                    <span class="truncate" :title="prof.email">{{ prof.email }}</span>
+                  </div>
+                </div>
+              </div>
+              <button @click="openEditProfileModal(prof)" title="Đổi tên gợi nhớ hoặc vai trò" class="text-slate-500 hover:text-slate-200 p-1 rounded hover:bg-slate-800">
+                <i class="fa-solid fa-pen text-xs"></i>
+              </button>
+            </div>
+
+            <!-- Role Badge & Status -->
+            <div class="mt-3.5 flex items-center space-x-2">
+              <span class="text-[10px] px-2 py-0.5 rounded-full bg-indigo-950 text-indigo-300 border border-indigo-800/80 font-medium">
+                🎯 {{ prof.role_tag }}
+              </span>
+              <span 
+                :class="prof.configured ? 'bg-emerald-950 text-emerald-400 border-emerald-800/80' : 'bg-amber-950 text-amber-400 border-amber-800/80'"
+                class="text-[10px] px-2 py-0.5 rounded-full border font-medium">
+                {{ prof.configured ? 'Đã Authenticated' : 'Chưa Login' }}
+              </span>
+            </div>
+
+            <!-- Directory & Active State -->
+            <div class="mt-3 space-y-1.5 text-xs text-slate-400 bg-slate-950/70 p-2.5 rounded-lg border border-slate-800/80 font-mono">
+              <div class="flex justify-between">
+                <span>Trạng thái:</span>
+                <span :class="prof.status === 'busy' ? 'text-amber-400 font-bold' : 'text-emerald-400'">
+                  <i class="fa-solid fa-circle text-[8px] mr-1"></i>{{ prof.status === 'busy' ? 'Đang chạy tác vụ' : 'Sẵn sàng (Idle)' }}
+                </span>
+              </div>
+              <div class="flex justify-between truncate">
+                <span>Thư mục:</span>
+                <span class="text-slate-300 truncate max-w-[200px]" :title="prof.path">{{ prof.path }}</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Bottom Action Buttons -->
+          <div class="mt-4 pt-3 border-t border-slate-800/80 flex items-center space-x-2">
+            <button 
+              @click="loginProfileOAuth(prof.id)" 
+              title="Đăng nhập lại OAuth Google" 
+              class="flex-1 py-1.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-indigo-300 rounded text-xs font-medium flex items-center justify-center space-x-1.5">
+              <i class="fa-solid fa-key text-[10px]"></i>
+              <span>Re-Auth / Login</span>
+            </button>
+            <button 
+              @click="quickPingProfile(prof.id)" 
+              title="Kiểm tra ping và quota" 
+              class="py-1.5 px-3 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-emerald-400 rounded text-xs font-medium flex items-center justify-center">
+              <i class="fa-solid fa-bolt text-[10px]"></i>
+            </button>
+            <button 
+              @click="quickLaunchProfile(prof.id)" 
+              title="Mở terminal agy với profile này" 
+              class="py-1.5 px-3 bg-indigo-600 hover:bg-indigo-500 text-white rounded text-xs font-medium flex items-center justify-center">
+              <i class="fa-solid fa-terminal text-[10px]"></i>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 4: GIT WORKTREES -->
+    <div v-show="currentTab === 'worktrees'" class="h-full p-6 overflow-y-auto max-w-5xl mx-auto">
+      <div class="flex items-center justify-between mb-6">
+        <div>
+          <h2 class="text-lg font-bold text-slate-100 flex items-center space-x-2">
+            <i class="fa-solid fa-code-branch text-sky-400"></i>
+            <span>Git Worktrees (Tránh xung đột khi 5-6 Acc cùng Code)</span>
+          </h2>
+          <p class="text-xs text-slate-400 mt-1">Sử dụng git worktree giúp mỗi Account làm việc trên 1 branch & thư mục riêng rẽ mà không cần git clone lại.</p>
+        </div>
+      </div>
+
+      <!-- Repo Path Input -->
+      <div class="bg-slate-900 border border-slate-800 rounded-xl p-4 mb-4 flex items-center space-x-3">
+        <label class="text-xs font-medium text-slate-300 whitespace-nowrap">Repo Path:</label>
+        <input 
+          v-model="worktreeRepo" 
+          @keyup.enter="fetchWorktrees()"
+          type="text" 
+          placeholder="/duong/dan/toi/repo" 
+          class="flex-1 bg-slate-950 border border-slate-700 rounded-md px-3 py-1.5 text-xs text-slate-200 font-mono focus:outline-none focus:border-indigo-500">
+        <button @click="fetchWorktrees()" class="px-3.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-indigo-400 border border-slate-700 rounded-md text-xs font-medium">
+          Quét Worktrees
+        </button>
+        <button @click="openWorktreeModal()" class="px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-md text-xs font-medium">
+          + Tạo Worktree Mới
+        </button>
+      </div>
+
+      <!-- Worktrees list -->
+      <div class="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
+        <table class="w-full text-left text-xs">
+          <thead class="bg-slate-800/80 text-slate-400 uppercase text-[10px] font-semibold border-b border-slate-700/60">
+            <tr>
+              <th class="px-4 py-2.5">Branch</th>
+              <th class="px-4 py-2.5">Thư mục</th>
+              <th class="px-4 py-2.5">Commit HEAD</th>
+              <th class="px-4 py-2.5 text-right">Hành động</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-slate-800">
+            <tr v-for="wt in worktreesList" :key="wt.path" class="hover:bg-slate-800/40">
+              <td class="px-4 py-3 font-semibold text-indigo-300 font-mono">{{ wt.branch || '(detached HEAD)' }}</td>
+              <td class="px-4 py-3 text-slate-300 font-mono text-[11px]">{{ wt.path }}</td>
+              <td class="px-4 py-3 text-slate-400 font-mono">{{ wt.head }}</td>
+              <td class="px-4 py-3 text-right">
+                <button @click="launchSessionAtDir(wt.path)" class="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-indigo-300 border border-slate-700 rounded text-xs">
+                  Mở AGY tại đây
+                </button>
+              </td>
+            </tr>
+            <tr v-if="worktreesList.length === 0">
+              <td colspan="4" class="px-4 py-6 text-center text-slate-500">
+                Nhập đường dẫn Git repo ở trên và nhấn "Quét Worktrees"
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+  </main>
+
+  <!-- ================= MODALS ================= -->
+
+  <!-- 0. GETTING STARTED / ENVIRONMENT CHECK -->
+  <div v-if="showGuideModal" class="fixed inset-0 bg-black/75 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+    <div class="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-2xl p-6 shadow-2xl flex flex-col max-h-[90vh]">
+      <div class="flex items-center justify-between pb-3 border-b border-slate-800 shrink-0">
+        <h3 class="text-base font-bold text-slate-100 flex items-center space-x-2.5">
+          <span class="w-8 h-8 rounded-lg bg-emerald-950 border border-emerald-700 flex items-center justify-center text-emerald-400"><i class="fa-solid fa-rocket text-sm"></i></span>
+          <span>Bắt đầu nhanh</span>
+        </h3>
+        <button @click="closeGuide()" class="text-slate-400 hover:text-white"><i class="fa-solid fa-xmark text-base"></i></button>
+      </div>
+
+      <div class="my-4 space-y-4 overflow-y-auto pr-2 text-xs text-slate-300 leading-relaxed">
+        <div class="bg-slate-950/70 p-3.5 rounded-xl border border-slate-800">
+          <h4 class="font-bold text-sky-300 text-sm mb-2 flex items-center justify-between">
+            <span><i class="fa-solid fa-stethoscope mr-2"></i>Kiểm tra môi trường</span>
+            <button @click="fetchDoctor()" class="text-[11px] text-slate-400 hover:text-white font-normal"><i class="fa-solid fa-rotate-right mr-1"></i>Kiểm tra lại</button>
+          </h4>
+          <div v-if="!doctor.checks.length" class="text-slate-500">Đang kiểm tra…</div>
+          <ul class="space-y-1.5">
+            <li v-for="c in doctor.checks" :key="c.id" class="flex items-start space-x-2">
+              <i class="mt-0.5 fa-solid" :class="c.ok ? 'fa-circle-check text-emerald-400' : (c.required ? 'fa-circle-xmark text-rose-400' : 'fa-circle-exclamation text-amber-400')"></i>
+              <div>
+                <span :class="c.ok ? 'text-slate-200' : 'text-slate-100 font-semibold'">{{ c.label }}</span>
+                <span v-if="!c.required && !c.ok" class="ml-1 text-[10px] text-amber-300">(nên có)</span>
+                <div v-if="!c.ok" class="text-slate-400 font-mono text-[11px]">{{ c.hint }}</div>
+              </div>
+            </li>
+          </ul>
+        </div>
+
+        <div class="bg-slate-950/70 p-3.5 rounded-xl border border-slate-800">
+          <h4 class="font-bold text-indigo-300 text-sm mb-2"><i class="fa-solid fa-list-ol mr-2"></i>Ba bước đầu tiên</h4>
+          <ol class="list-decimal pl-5 space-y-1.5">
+            <li><b>Đăng nhập account:</b> tab <b>Tài Khoản</b> → <b>🔑 Đăng nhập</b> cho từng account. Mỗi account dùng một tài khoản Google khác nhau (nên dùng cửa sổ ẩn danh hoặc profile trình duyệt riêng cho mỗi lần đăng nhập).</li>
+            <li><b>Chọn Orchestrator:</b> ở ô trên cùng của <b>Terminal Studio</b>, mở danh sách → <b>＋ Claude Code</b> (hoặc một account agy).</li>
+            <li><b>Mở worker:</b> bấm <b>Terminal mới</b> (hoặc <b>＋</b> trong danh sách của mỗi ô). Nói mục tiêu với Orchestrator để nó chia việc, hoặc mở <b>Điều phối</b> để tự giao.</li>
+          </ol>
+        </div>
+
+        <div class="bg-slate-950/70 p-3.5 rounded-xl border border-slate-800">
+          <h4 class="font-bold text-emerald-300 text-sm mb-2"><i class="fa-solid fa-lightbulb mr-2"></i>Mẹo</h4>
+          <ul class="list-disc pl-5 space-y-1">
+            <li><b>Kích thước:</b> thanh kéo trên thanh công cụ chỉnh đồng loạt mọi ô worker; thanh 👑 chỉnh riêng Orchestrator. Trang cuộn được.</li>
+            <li><b>Đồng bộ gõ:</b> bật rồi tick các ô muốn nhận phím; gõ ở một ô là các ô đã tick nhận y hệt.</li>
+            <li><b>Cuộn:</b> lăn chuột trên terminal để cuộn trang; giữ <b>Shift</b> để cuộn bên trong terminal.</li>
+            <li><b>Đổi chỗ / giao quyền:</b> kéo ⋮⋮ để đổi chỗ ô; kéo một worker lên ô Orchestrator để giao quyền.</li>
+            <li><b>Terminal không mất khi restart hub</b> nếu máy có tmux. Hãy dùng Telex/VNI ở thanh nhập phía dưới; lệnh <code>/…</code> nên gõ khi bộ gõ ở chế độ tiếng Anh.</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="pt-3 border-t border-slate-800 flex justify-end shrink-0">
+        <button @click="closeGuide()" class="px-5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-semibold shadow-md">Đã hiểu</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 1. LAUNCH TERMINAL MODAL -->
+  <div v-if="showLaunchModal" class="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+    <div class="bg-slate-900 border border-slate-700 rounded-xl w-full max-w-lg p-5 shadow-2xl">
+      <div class="flex items-center justify-between pb-3 border-b border-slate-800">
+        <h3 class="text-sm font-bold text-slate-100 flex items-center space-x-2">
+          <i class="fa-solid fa-terminal text-indigo-400"></i>
+          <span>Khởi chạy Terminal Session Mới</span>
+        </h3>
+        <button @click="showLaunchModal = false" class="text-slate-400 hover:text-white"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+
+      <div class="mt-4 space-y-3.5 text-xs">
+        <div>
+          <label class="block font-semibold text-slate-300 mb-1">Tài khoản:</label>
+          <select v-model="newSession.profile_id" @change="onModalAccountChange()" class="w-full bg-slate-950 border border-slate-700 rounded px-3 py-1.5 text-slate-200 focus:outline-none focus:border-indigo-500 font-mono">
+            <option v-for="o in accountOptions" :key="o.id" :value="o.id">{{ o.label }}{{ runningCount(o.id) ? ' — đang có ' + runningCount(o.id) + ' terminal' : '' }}</option>
+            <option value="system">Tài khoản mặc định của máy (không cô lập token)</option>
+          </select>
+        </div>
+
+        <div>
+          <label v-if="newSession.profile_id !== 'claude'" class="block font-semibold text-slate-300 mb-1">Chế độ / Chức năng (Mode):</label>
+          <div v-if="newSession.profile_id !== 'claude'" class="grid grid-cols-3 gap-2">
+            <button 
+              type="button" 
+              @click="setSessionMode('plan')" 
+              :class="newSession.mode === 'plan' ? 'bg-indigo-600 text-white border-indigo-500' : 'bg-slate-800 text-slate-300 border-slate-700'"
+              class="p-2 rounded border text-left flex flex-col justify-between">
+              <span class="font-bold">Planning</span>
+              <span class="text-[10px] opacity-75">--mode plan</span>
+            </button>
+            <button 
+              type="button" 
+              @click="setSessionMode('accept-edits')" 
+              :class="newSession.mode === 'accept-edits' ? 'bg-sky-600 text-white border-sky-500' : 'bg-slate-800 text-slate-300 border-slate-700'"
+              class="p-2 rounded border text-left flex flex-col justify-between">
+              <span class="font-bold">Implementer</span>
+              <span class="text-[10px] opacity-75">--mode accept-edits</span>
+            </button>
+            <button 
+              type="button" 
+              @click="setSessionMode('interactive')" 
+              :class="newSession.mode === 'interactive' ? 'bg-emerald-600 text-white border-emerald-500' : 'bg-slate-800 text-slate-300 border-slate-700'"
+              class="p-2 rounded border text-left flex flex-col justify-between">
+              <span class="font-bold">Interactive</span>
+              <span class="text-[10px] opacity-75">agy tự do</span>
+            </button>
+          </div>
+        </div>
+
+        <div>
+          <label class="block font-semibold text-slate-300 mb-1">Thư mục làm việc (Working Directory):</label>
+          <input v-model="newSession.cwd" type="text" class="w-full bg-slate-950 border border-slate-700 rounded px-3 py-1.5 text-slate-200 font-mono focus:outline-none focus:border-indigo-500">
+          <div class="flex items-center space-x-1.5 mt-1 overflow-x-auto py-1">
+            <span class="text-[10px] text-slate-500">Gần đây:</span>
+            <button 
+              v-for="ws in recentWorkspaces" 
+              :key="ws" 
+              @click="newSession.cwd = ws" 
+              class="text-[10px] px-1.5 py-0.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded font-mono truncate max-w-[140px]" :title="ws">
+              {{ ws.split('/').pop() || ws }}
+            </button>
+          </div>
+        </div>
+
+        <details class="text-slate-400">
+          <summary class="cursor-pointer text-slate-400 hover:text-slate-200">Tuỳ chọn nâng cao (tên session, lệnh)</summary>
+          <div class="mt-2 space-y-2.5">
+            <div>
+              <label class="block font-semibold text-slate-300 mb-1">Tên Session:</label>
+              <input v-model="newSession.name" type="text" placeholder="vd: Feature X - Planner" class="w-full bg-slate-950 border border-slate-700 rounded px-3 py-1.5 text-slate-200 focus:outline-none focus:border-indigo-500">
+            </div>
+            <div>
+              <label class="block font-semibold text-slate-300 mb-1">Lệnh thực thi (Command):</label>
+              <input v-model="newSession.command" type="text" class="w-full bg-slate-950 border border-slate-700 rounded px-3 py-1.5 text-slate-200 font-mono focus:outline-none focus:border-indigo-500">
+            </div>
+          </div>
+        </details>
+      </div>
+
+      <div class="mt-5 pt-3 border-t border-slate-800 flex justify-end space-x-2">
+        <button @click="showLaunchModal = false" class="px-3.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-xs font-medium">Hủy</button>
+        <button @click="confirmLaunchSession()" class="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded text-xs font-semibold shadow-lg shadow-indigo-600/30">
+          Khởi chạy ngay
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 2. EDIT PROFILE MODAL (CHỈNH SỬA TÊN GỢI NHỚ / EMAIL / ROLE) -->
+  <div v-if="showEditProfileModal" class="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+    <div class="bg-slate-900 border border-slate-700 rounded-xl w-full max-w-md p-5 shadow-2xl">
+      <div class="flex items-center justify-between pb-3 border-b border-slate-800">
+        <h3 class="text-sm font-bold text-slate-100 flex items-center space-x-2">
+          <i class="fa-solid fa-pen text-indigo-400"></i>
+          <span>Chỉnh Sửa Thông Tin: {{ editProfileForm.id }}</span>
+        </h3>
+        <button @click="showEditProfileModal = false" class="text-slate-400 hover:text-white"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+
+      <div class="mt-4 space-y-3.5 text-xs">
+        <div>
+          <label class="block font-semibold text-slate-300 mb-1">Tên Gợi Nhớ (Alias):</label>
+          <input v-model="editProfileForm.alias" type="text" placeholder="vd: Acc 1 (Planner chính)" class="w-full bg-slate-950 border border-slate-700 rounded px-3 py-1.5 text-slate-200 focus:outline-none focus:border-indigo-500">
+        </div>
+
+        <div>
+          <label class="block font-semibold text-slate-300 mb-1">Email Google Liên Kết:</label>
+          <input v-model="editProfileForm.email" type="email" placeholder="vd: your-name@gmail.com" class="w-full bg-slate-950 border border-slate-700 rounded px-3 py-1.5 text-slate-200 focus:outline-none focus:border-indigo-500 font-mono">
+        </div>
+
+        <div>
+          <label class="block font-semibold text-slate-300 mb-1">Vai Trò Phụ Trách (Role):</label>
+          <select v-model="editProfileForm.role_tag" class="w-full bg-slate-950 border border-slate-700 rounded px-3 py-1.5 text-slate-200">
+            <option value="Architect / Planner">Architect / Planner (Lên kiến trúc & Plan)</option>
+            <option value="Core Implementer">Core Implementer (Lập trình chính)</option>
+            <option value="Feature Coder">Feature Coder (Lập trình module phụ)</option>
+            <option value="QA / Tester">QA / Tester (Chạy test suite, bench)</option>
+            <option value="Reviewer & Docs">Reviewer & Docs (Review diff, viết docs)</option>
+            <option value="Batch / Standby">Batch / Standby (dự phòng)</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="mt-5 pt-3 border-t border-slate-800 flex justify-end space-x-2">
+        <button @click="showEditProfileModal = false" class="px-3.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-xs font-medium">Hủy</button>
+        <button @click="confirmSaveProfile()" class="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded text-xs font-semibold">Lưu Thay Đổi</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 3. CREATE TASK MODAL -->
+  <div v-if="showTaskModal" class="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+    <div class="bg-slate-900 border border-slate-700 rounded-xl w-full max-w-md p-5 shadow-2xl">
+      <div class="flex items-center justify-between pb-3 border-b border-slate-800">
+        <h3 class="text-sm font-bold text-slate-100 flex items-center space-x-2">
+          <i class="fa-solid fa-list-check text-indigo-400"></i>
+          <span>Thêm Task Vào Pipeline</span>
+        </h3>
+        <button @click="showTaskModal = false" class="text-slate-400 hover:text-white"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+
+      <div class="mt-4 space-y-3.5 text-xs">
+        <div>
+          <label class="block font-semibold text-slate-300 mb-1">Tiêu đề Task:</label>
+          <input v-model="newTask.title" type="text" placeholder="vd: Lên plan refactor module extraction" class="w-full bg-slate-950 border border-slate-700 rounded px-3 py-1.5 text-slate-200 focus:outline-none focus:border-indigo-500">
+        </div>
+
+        <div>
+          <label class="block font-semibold text-slate-300 mb-1">Mô tả chi tiết:</label>
+          <textarea v-model="newTask.description" rows="3" placeholder="Chi tiết yêu cầu, file cần sửa..." class="w-full bg-slate-950 border border-slate-700 rounded px-3 py-1.5 text-slate-200 focus:outline-none focus:border-indigo-500"></textarea>
+        </div>
+
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="block font-semibold text-slate-300 mb-1">Giai đoạn:</label>
+            <select v-model="newTask.stage" class="w-full bg-slate-950 border border-slate-700 rounded px-3 py-1.5 text-slate-200">
+              <option value="backlog">Backlog</option>
+              <option value="planning">1. Planning (Architect)</option>
+              <option value="implementing">2. Implementing (Coder)</option>
+              <option value="review">3. Review & QA</option>
+              <option value="done">4. Hoàn thành</option>
+            </select>
+          </div>
+
+          <div>
+            <label class="block font-semibold text-slate-300 mb-1">Account thực thi:</label>
+            <select v-model="newTask.assigned_profile" class="w-full bg-slate-950 border border-slate-700 rounded px-3 py-1.5 text-slate-200 font-mono">
+              <option v-for="p in profiles" :key="p.id" :value="p.id">
+                [{{ p.id }}] {{ p.email }}
+              </option>
+            </select>
+          </div>
+        </div>
+
+        <div>
+          <label class="block font-semibold text-slate-300 mb-1">Thư mục dự án:</label>
+          <input v-model="newTask.workspace_dir" type="text" class="w-full bg-slate-950 border border-slate-700 rounded px-3 py-1.5 text-slate-200 font-mono">
+        </div>
+      </div>
+
+      <div class="mt-5 pt-3 border-t border-slate-800 flex justify-end space-x-2">
+        <button @click="showTaskModal = false" class="px-3.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-xs font-medium">Hủy</button>
+        <button @click="confirmCreateTask()" class="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded text-xs font-semibold">Tạo Task</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 4. CREATE WORKTREE MODAL -->
+  <div v-if="showWorktreeModal" class="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+    <div class="bg-slate-900 border border-slate-700 rounded-xl w-full max-w-md p-5 shadow-2xl">
+      <div class="flex items-center justify-between pb-3 border-b border-slate-800">
+        <h3 class="text-sm font-bold text-slate-100 flex items-center space-x-2">
+          <i class="fa-solid fa-code-branch text-sky-400"></i>
+          <span>Tạo Git Worktree Mới</span>
+        </h3>
+        <button @click="showWorktreeModal = false" class="text-slate-400 hover:text-white"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+
+      <div class="mt-4 space-y-3.5 text-xs">
+        <div>
+          <label class="block font-semibold text-slate-300 mb-1">Tên Branch Mới:</label>
+          <input v-model="newWorktree.branch_name" type="text" placeholder="vd: feat/ten-tinh-nang" class="w-full bg-slate-950 border border-slate-700 rounded px-3 py-1.5 text-slate-200 font-mono">
+        </div>
+
+        <div>
+          <label class="block font-semibold text-slate-300 mb-1">Thư mục đích cho Worktree:</label>
+          <input v-model="newWorktree.target_path" type="text" placeholder="vd: /duong/dan/toi/worktree-moi" class="w-full bg-slate-950 border border-slate-700 rounded px-3 py-1.5 text-slate-200 font-mono">
+        </div>
+
+        <div>
+          <label class="block font-semibold text-slate-300 mb-1">Base Branch:</label>
+          <input v-model="newWorktree.base_branch" type="text" placeholder="main" class="w-full bg-slate-950 border border-slate-700 rounded px-3 py-1.5 text-slate-200 font-mono">
+        </div>
+      </div>
+
+      <div class="mt-5 pt-3 border-t border-slate-800 flex justify-end space-x-2">
+        <button @click="showWorktreeModal = false" class="px-3.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-xs font-medium">Hủy</button>
+        <button @click="confirmCreateWorktree()" class="px-4 py-1.5 bg-sky-600 hover:bg-sky-500 text-white rounded text-xs font-semibold">Tạo Worktree</button>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- Vue.js Application Logic -->
+<script>
+const { createApp, ref, computed, onMounted, nextTick, watch } = Vue;
+
+createApp({
+  setup() {
+    const currentTab = ref('studio');
+    const tasks = ref([]);
+    const sessions = ref([]);
+    const profiles = ref([]);
+    const recentWorkspaces = ref([]);
+    const worktreeRepo = ref('');
+    const worktreesList = ref([]);
+    const sysStats = ref({ cpu_percent: 0, ram_percent: 0, ram_used_gb: 0, ram_total_gb: 0, running_agy_procs: 0 });
+
+    // Slash command dropdown & banner
+    const showSlashDropdown = ref(false);
+    const showGuideModal = ref(false);
+    const doctor = ref({ checks: [], ready: true });
+    const doctorProblems = computed(() => doctor.value.checks.filter(c => c.required && !c.ok).length);
+    const fetchDoctor = async () => {
+      try { doctor.value = await (await fetch('/api/doctor')).json(); } catch (e) { console.error(e); }
+    };
+    const closeGuide = () => {
+      showGuideModal.value = false;
+      try { localStorage.setItem('agy.setupSeen', '1'); } catch (e) { /* storage may be blocked */ }
+    };
+
+    // Edit profile state
+    const showEditProfileModal = ref(false);
+    const editProfileForm = ref({ id: '', alias: '', email: '', role_tag: '' });
+
+    // Studio layout: phone-farm style fixed-size tiles, page scrolls (persisted per browser)
+    const LAYOUT_KEY = 'agy.studio.layout.v4';
+    const loadLayoutPrefs = () => { try { return JSON.parse(localStorage.getItem(LAYOUT_KEY) || '{}'); } catch (e) { return {}; } };
+    const _prefs = loadLayoutPrefs();
+    // One knob: the slider sets tile width; height and font follow it (aspect ~16:10.4).
+    const tileW = ref(Math.min(1100, Math.max(300, typeof _prefs.tileW === 'number' ? _prefs.tileW : 480)));
+    const tileH = computed(() => Math.round(tileW.value * 0.65));
+    const orchH = ref(Math.min(1000, Math.max(240, typeof _prefs.orchH === 'number' ? _prefs.orchH : 420)));
+    const orchFont = computed(() => Math.round(11 + (orchH.value - 240) / 760 * 4));
+    const termFontSize = computed(() => Math.round(10 + (tileW.value - 300) / 800 * 5));
+    const pageWheel = ref(true);
+    const maximizedIdx = ref(null);
+    const maxRect = ref(null);
+    const saveLayoutPrefs = () => {
+      try { localStorage.setItem(LAYOUT_KEY, JSON.stringify({ tileW: tileW.value, orchH: orchH.value })); } catch (e) { /* storage may be blocked */ }
+    };
+
+    // Typing diagnostics: show exactly what the terminal sent, and warn when an IME (Telex/VNI...) is composing.
+    const lastKeys = ref([]);
+    const imeWarn = ref(false);
+    let imeTimer = null;
+    const prettyKey = (d) => d.split('').map(c => {
+      const n = c.charCodeAt(0);
+      if (c === '\r') return '↵';
+      if (n === 27) return '⎋';
+      if (n === 9) return '⇥';
+      if (n === 127) return '⌫';
+      if (n < 32) return '^' + String.fromCharCode(n + 64);
+      return c;
+    }).join('');
+    const noteKeys = (data) => { lastKeys.value = [...lastKeys.value, prettyKey(data)].slice(-18); };
+    const noteIme = (composing) => {
+      clearTimeout(imeTimer);
+      if (composing) imeWarn.value = true;
+      else imeTimer = setTimeout(() => { imeWarn.value = false; }, 10000);
+    };
+
+    // Synchronized typing across selected worker tiles
+    const syncEnabled = ref(false);
+    const syncMembers = ref({});
+
+    // Studio: orchestrator pane + drag & drop + dispatch drawer
+    const drawerOpen = ref(false);
+    const drawerTab = ref('assign');
+    const drawerTabs = [
+      { key: 'assign', label: 'Giao việc' },
+      { key: 'progress', label: 'Tiến độ' },
+      { key: 'log', label: 'Nhật ký & kết quả' }
+    ];
+    const dragPaneIdx = ref(null);
+    const dragOverIdx = ref(null);
+    const ROLE_OPTIONS = ['Architect / Planner', 'Core Implementer', 'Feature Coder', 'QA / Tester', 'Reviewer & Docs', 'Batch / Standby'];
+    const MAX_PANES = 25; // pane 0 = orchestrator, 1..24 = worker tiles
+    const workerTileIdxs = computed(() => panes.value.map((p, i) => (i >= 1 && p.sessionId ? i : -1)).filter(i => i > 0));
+    const visiblePaneIdxs = computed(() => [0, ...workerTileIdxs.value]);
+    const syncCount = computed(() => workerTileIdxs.value.filter(i => syncMembers.value[i]).length);
+
+
+    // Every tile has an explicit pixel size; the orchestrator spans the full row, workers flow below it.
+    const paneGridStyle = (idx) => {
+      if (maximizedIdx.value === idx && maxRect.value) {
+        const r = maxRect.value;
+        return { position: 'fixed', top: r.top + 'px', left: r.left + 'px', width: r.width + 'px', height: r.height + 'px', zIndex: 40 };
+      }
+      return idx === 0 ? { flex: '0 0 100%', height: orchH.value + 'px' } : { flex: '0 0 auto', width: tileW.value + 'px', maxWidth: '100%', height: tileH.value + 'px' };
+    };
+
+    const disposePaneTerminal = (idx) => {
+      const inst = xtermInstances[idx];
+      if (!inst) return;
+      try { if (inst.ws) inst.ws.close(); } catch (e) { /* already closed */ }
+      try { if (inst.ro) inst.ro.disconnect(); } catch (e) { /* ignore */ }
+      try { inst.term.dispose(); } catch (e) { /* ignore */ }
+      delete xtermInstances[idx];
+    };
+
+    const dismissedSessions = new Set();
+    const orchestratorKnown = ref(false); // don't place tiles until we know which session is the orchestrator
+    // A tile exists for every session. Sessions created elsewhere (dispatch, the orchestrator CLI) appear automatically.
+    const attachPendingPanes = () => {
+      visiblePaneIdxs.value.forEach(idx => {
+        if (!document.getElementById(`term-container-${idx}`)) return;
+        initOrResizeTerminal(idx);
+        const inst = xtermInstances[idx];
+        const sid = panes.value[idx].sessionId;
+        const sessRunning = getPaneSession(sid)?.status === 'running';
+        // Re-attach when the tile shows another session, or when its socket died (e.g. the hub restarted) and the session lives on.
+        if (inst && sid && (inst.attachedSessionId !== sid || (sessRunning && (!inst.ws || inst.ws.readyState > WebSocket.OPEN)))) {
+          attachSessionToPane(idx, sid);
+        }
+      });
+    };
+
+    const clearPane = (idx) => {
+      panes.value[idx].sessionId = '';
+      if (idx > 0) disposePaneTerminal(idx);
+      else if (xtermInstances[0]) {
+        if (xtermInstances[0].ws) { xtermInstances[0].ws.close(); xtermInstances[0].ws = null; }
+        xtermInstances[0].term.clear();
+        xtermInstances[0].attachedSessionId = null;
+      }
+    };
+
+    const syncPanesWithSessions = () => {
+      if (!orchestratorKnown.value) return;
+      const ids = new Set(sessions.value.map(s => s.session_id));
+      let changed = false;
+      panes.value.forEach((p, idx) => { if (p.sessionId && !ids.has(p.sessionId)) { clearPane(idx); changed = true; } });
+      const shown = new Set(panes.value.map(p => p.sessionId).filter(Boolean));
+      if (!panes.value[0].sessionId) {
+        const o = sessions.value.find(x => x.profile_id === orchestratorProfile.value && x.status === 'running' && !shown.has(x.session_id) && !dismissedSessions.has(x.session_id));
+        if (o) { panes.value[0].sessionId = o.session_id; shown.add(o.session_id); changed = true; }
+      }
+      for (const x of sessions.value) {
+        if (shown.has(x.session_id) || dismissedSessions.has(x.session_id)) continue;
+        const free = panes.value.findIndex((p, i) => i >= 1 && !p.sessionId);
+        if (free === -1) break;
+        panes.value[free].sessionId = x.session_id;
+        shown.add(x.session_id);
+        changed = true;
+      }
+      if (changed) nextTick(() => setTimeout(attachPendingPanes, 30));
+    };
+
+    // Put a session into a pane, making sure it is not also shown in another one.
+    const assignSession = (idx, sid) => {
+      panes.value.forEach((p, i) => { if (i !== idx && p.sessionId === sid) clearPane(i); });
+      panes.value[idx].sessionId = sid;
+    };
+
+    const runningCount = (profileId) => sessions.value.filter(x => x.profile_id === profileId && x.status === 'running').length;
+
+    // ---- synchronized typing ----
+    const syncTargets = (idx) => (syncEnabled.value && idx !== 0 && syncMembers.value[idx])
+      ? workerTileIdxs.value.filter(i => syncMembers.value[i]) : [idx];
+    const wsOpen = (i) => xtermInstances[i]?.ws && xtermInstances[i].ws.readyState === WebSocket.OPEN;
+    // Send raw input to a pane, fanned out to every synced pane if this one is part of the sync set.
+    const sendKeys = (idx, data) => { syncTargets(idx).forEach(i => { if (wsOpen(i)) xtermInstances[i].ws.send(data); }); };
+    const toggleSync = () => {
+      syncEnabled.value = !syncEnabled.value;
+      if (syncEnabled.value && !syncCount.value) syncSelectAll();
+    };
+    const syncSelectAll = () => { const m = {}; workerTileIdxs.value.forEach(i => { m[i] = true; }); syncMembers.value = m; };
+    const syncSelectNone = () => { syncMembers.value = {}; };
+    const toggleSyncMember = (idx) => { syncMembers.value = { ...syncMembers.value, [idx]: !syncMembers.value[idx] }; };
+
+    const toggleMaximize = (idx) => {
+      if (maximizedIdx.value === idx) {
+        maximizedIdx.value = null;
+      } else {
+        const sc = document.getElementById('studio-scroll');
+        if (!sc) return;
+        const r = sc.getBoundingClientRect();
+        maxRect.value = { top: r.top, left: r.left, width: r.width, height: r.height };
+        maximizedIdx.value = idx;
+      }
+      focusedPaneIdx.value = idx;
+      nextTick(() => setTimeout(() => {
+        visiblePaneIdxs.value.forEach(i => xtermInstances[i]?.fitAddon?.fit());
+        focusPane(idx);
+      }, 60));
+    };
+
+    const onSizeInput = () => {
+      saveLayoutPrefs();
+      Object.entries(xtermInstances).forEach(([i, inst]) => {
+        if (!inst?.term) return;
+        const f = Number(i) === 0 ? orchFont.value : termFontSize.value;
+        if (inst.term.options.fontSize !== f) inst.term.options.fontSize = f;
+        try { inst.fitAddon.fit(); } catch (e) { /* container hidden */ }
+      });
+    };
+
+    // ---- create / login straight from a tile's session dropdown ----
+    const placeNewSession = (idx, sess) => {
+      dismissedSessions.delete(sess.session_id);
+      let target = idx;
+      if (idx === 0) {
+        // The previous orchestrator terminal (if any) is not killed: it drops to a worker tile via syncPanesWithSessions.
+        if (panes.value[0].sessionId && panes.value[0].sessionId !== sess.session_id) clearPane(0);
+      } else {
+        target = getSmartTargetPaneIdx();
+      }
+      assignSession(target, sess.session_id);
+      focusedPaneIdx.value = target;
+      nextTick(() => setTimeout(() => { attachPendingPanes(); focusPane(target); }, 40));
+      return target;
+    };
+
+    const newTerminalFromPane = async (idx, kind) => {
+      if (kind === 'claude') {
+        if (idx === 0) return startClaudeOrchestrator();
+        // an extra Claude Code terminal in a worker tile (the orchestrator stays in the top pane)
+        try {
+          const res = await fetch('/api/sessions', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: 'Claude Code', profile_id: 'claude', cwd: recentWorkspaces.value[0] || homeDir.value, command: 'claude', cols: 100, rows: 30 })
+          });
+          const sess = await res.json();
+          if (!res.ok) { alert(sess.detail || 'Không tạo được terminal'); return; }
+          await fetchSessions();
+          placeNewSession(idx, sess);
+        } catch (e) { alert('Lỗi tạo terminal: ' + e); }
+        return;
+      }
+      const prof = profiles.value.find(x => x.id === kind);
+      try {
+        const res = await fetch('/api/sessions', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: `${prof ? prof.name : kind}`, profile_id: kind, cwd: recentWorkspaces.value[0] || homeDir.value, command: 'agy', cols: 100, rows: 30 })
+        });
+        const sess = await res.json();
+        if (!res.ok) { alert(sess.detail || 'Không tạo được terminal'); return; }
+        await fetchSessions();
+        placeNewSession(idx, sess);
+        if (idx === 0) await setOrchestrator(kind);
+      } catch (e) { alert('Lỗi tạo terminal: ' + e); }
+    };
+
+    const loginFromPane = async (idx, kind) => {
+      if (kind === 'claude') return claudeLogin();
+      if (!confirm(`Đăng nhập lại ${workerNameOf(kind)} (${getProfileEmail(kind)})? Token/cấu hình cũ được chuyển vào ~/.agy_profiles/_backup/ (không xoá) rồi mở terminal OAuth.`)) return;
+      try {
+        const res = await fetch(`/api/profiles/${kind}/login`, { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) { alert(data.detail || 'Không thể bắt đầu đăng nhập'); return; }
+        await fetchSessions();
+        placeNewSession(idx, data.session);
+      } catch (e) { alert('Lỗi đăng nhập: ' + e); }
+    };
+
+    // Claude Code logs in inside its own terminal with /login.
+    const claudeLogin = () => {
+      if (paneProfileId(0) !== 'claude' || !wsOpen(0)) {
+        alert('Hãy khởi chạy Claude Code ở ô Orchestrator trước (danh sách phía trên: ＋ Claude Code), rồi bấm đăng nhập.');
+        return;
+      }
+      focusedPaneIdx.value = 0;
+      sendKeys(0, '\x1b');
+      setTimeout(() => { sendKeys(0, '/login\r'); xtermInstances[0]?.term.focus(); }, 80);
+    };
+
+    const onPaneSelect = (idx, e) => {
+      const v = e.target.value;
+      e.target.value = panes.value[idx].sessionId; // the real state is re-rendered from `panes`
+      if (v.startsWith('new:')) return newTerminalFromPane(idx, v.slice(4));
+      if (v.startsWith('login:')) return loginFromPane(idx, v.slice(6));
+      if (!v) return detachPane(idx);
+      dismissedSessions.delete(v);
+      assignSession(idx, v);
+      nextTick(() => setTimeout(() => attachPendingPanes(), 30));
+    };
+
+    // Claude Code and the agy accounts are different services even when they share one email.
+    const claudeEmail = computed(() => (claude.value.auth && claude.value.auth.email) || '');
+    const claudeSharesWith = computed(() => profiles.value.find(p => claudeEmail.value && p.email === claudeEmail.value) || null);
+    const accountOptions = computed(() => [
+      { id: 'claude', label: `Claude Code · ${claudeEmail.value || 'tài khoản Claude của máy'} (Claude / Anthropic)` },
+      ...profiles.value.map(p => ({ id: p.id, label: `${p.name} · ${p.email} — ${p.role_tag} (${p.id}, agy/Gemini)` }))
+    ]);
+    const onModalAccountChange = () => {
+      const ns = newSession.value;
+      if (ns.profile_id === 'claude') { ns.mode = 'interactive'; ns.command = 'claude'; }
+      else if (ns.command === 'claude') { setSessionMode('plan'); }
+    };
+
+    const orchestratorIdentity = computed(() => {
+      const pid = paneProfileId(0);
+      if (pid === 'claude') {
+        const a = claude.value.auth || {};
+        return { text: ['Claude Code', a.email, a.plan].filter(Boolean).join(' · '), title: 'Tài khoản Claude của máy này (tách khỏi các account Gemini)' };
+      }
+      const w = pid ? workerById(pid) : null;
+      return w ? { text: `${w.name} · ${w.email}`, title: w.profile_id } : { text: '', title: '' };
+    });
+
+    // Command Center state
+    const homeDir = ref(''); // the hub's home dir (from /api/system); '' lets the server fall back to it
+    const claudeSessionId = ref(null);
+    const claude = ref({ session_id: null, status: 'idle', state: 'idle', output: '' });
+    const progressColumns = [
+      { key: 'backlog', label: 'Backlog', cls: 'text-slate-400', next: 'planning' },
+      { key: 'planning', label: 'Planning', cls: 'text-indigo-300', next: 'implementing' },
+      { key: 'implementing', label: 'Implementing', cls: 'text-emerald-300', next: 'review' },
+      { key: 'review', label: 'Review', cls: 'text-amber-300', next: 'done' },
+      { key: 'done', label: 'Done', cls: 'text-sky-300', next: null }
+    ];
+    const ccGoal = ref('');
+    const ccCwd = ref('');
+    const ccItems = ref([]);
+    const ccLog = ref([]);
+    const isRunningPlan = ref(false);
+    // Orchestrator Hub state
+    const orchestratorProfile = ref('acc1');
+    const orchestratorWorkers = ref([]);
+    const isRefreshingWorkers = ref(false);
+    // Terminal interactive input bar
+    const terminalInputText = ref('');
+
+    // Grid panes state (max 6 panes)
+        const focusedPaneIdx = ref(0);
+    const panes = ref(Array.from({ length: 25 }, () => ({ sessionId: '' })));
+
+    // xterm instances and WS map
+    const xtermInstances = {}; // idx -> { term, fitAddon, ws, attachedSessionId }
+
+    // Modals
+    const showLaunchModal = ref(false);
+    const showTaskModal = ref(false);
+    const showWorktreeModal = ref(false);
+    const targetPaneIdxForLaunch = ref(null);
+
+    const newSession = ref({
+      name: '',
+      profile_id: 'acc1',
+      mode: 'plan',
+      cwd: homeDir.value,
+      command: 'agy --mode plan',
+      task_id: null
+    });
+
+    const newTask = ref({
+      title: '',
+      description: '',
+      stage: 'backlog',
+      assigned_profile: 'acc1',
+      workspace_dir: homeDir.value
+    });
+
+    const newWorktree = ref({
+      branch_name: '',
+      target_path: '',
+      base_branch: 'main'
+    });
+
+    const activeSessionsCount = computed(() => {
+      return sessions.value.filter(s => s.status === 'running').length;
+    });
+
+    // Helper functions for profiles and emails
+    const getProfile = (profileId) => {
+      return profiles.value.find(p => p.id === profileId);
+    };
+
+    const getProfileEmail = (profileId) => {
+      const p = getProfile(profileId);
+      return p ? p.email : '';
+    };
+
+    // API calls
+    const fetchTasks = async () => {
+      try {
+        const res = await fetch('/api/tasks');
+        tasks.value = await res.json();
+      } catch (e) { console.error(e); }
+    };
+
+    const fetchSessions = async () => {
+      try {
+        const res = await fetch('/api/sessions');
+        sessions.value = await res.json();
+        syncPanesWithSessions();
+      } catch (e) { console.error(e); }
+    };
+
+    const fetchProfiles = async () => {
+      try {
+        const res = await fetch('/api/profiles');
+        profiles.value = await res.json();
+      } catch (e) { console.error(e); }
+    };
+
+    const fetchWorkspaces = async () => {
+      try {
+        const res = await fetch('/api/workspaces');
+        recentWorkspaces.value = await res.json();
+      } catch (e) { console.error(e); }
+    };
+
+    const fetchSystemStats = async () => {
+      try {
+        const res = await fetch('/api/system');
+        sysStats.value = await res.json();
+        if (sysStats.value.home && !homeDir.value) {
+          homeDir.value = sysStats.value.home;
+          if (!ccCwd.value) ccCwd.value = homeDir.value;
+        }
+      } catch (e) { console.error(e); }
+    };
+
+    const fetchWorktrees = async () => {
+      if (!worktreeRepo.value) return;
+      try {
+        const res = await fetch(`/api/git/worktrees?repo_path=${encodeURIComponent(worktreeRepo.value)}`);
+        const data = await res.json();
+        if (data.worktrees) {
+          worktreesList.value = data.worktrees;
+        }
+      } catch (e) { console.error(e); }
+    };
+
+    const getTasksByStage = (stage) => {
+      return tasks.value.filter(t => t.stage === stage);
+    };
+
+    const moveTaskStage = async (task, nextStage) => {
+      task.stage = nextStage;
+      await fetch(`/api/tasks/${task.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ stage: nextStage })
+      });
+      fetchTasks();
+    };
+
+    const deleteTask = async (taskId) => {
+      if (!confirm('Bạn có chắc muốn xóa task này?')) return;
+      await fetch(`/api/tasks/${taskId}`, { method: 'DELETE' });
+      fetchTasks();
+    };
+
+    const openTaskModal = () => {
+      newTask.value = {
+        title: '',
+        description: '',
+        stage: 'backlog',
+        assigned_profile: profiles.value[0]?.id || 'acc1',
+        workspace_dir: recentWorkspaces.value[0] || homeDir.value
+      };
+      showTaskModal.value = true;
+    };
+
+    const confirmCreateTask = async () => {
+      if (!newTask.value.title) return;
+      await fetch('/api/tasks', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newTask.value)
+      });
+      showTaskModal.value = false;
+      fetchTasks();
+    };
+
+    // Terminal Studio logic
+    const focusPane = (idx) => {
+      focusedPaneIdx.value = idx;
+      if (xtermInstances[idx]?.term) {
+        xtermInstances[idx].term.focus();
+      }
+    };
+
+    const getPaneSession = (sessionId) => {
+      return sessions.value.find(s => s.session_id === sessionId);
+    };
+
+    const initOrResizeTerminal = (idx) => {
+      const container = document.getElementById(`term-container-${idx}`);
+      if (!container) return;
+
+      if (!xtermInstances[idx]) {
+        const term = new Terminal({
+          theme: {
+            background: '#090d16',
+            foreground: '#e2e8f0',
+            cursor: '#6366f1',
+            selectionBackground: '#4338ca',
+          },
+          fontSize: idx === 0 ? orchFont.value : termFontSize.value,
+          fontFamily: 'Menlo, Monaco, "Courier New", monospace',
+          cursorBlink: true,
+          convertEol: true,
+          scrollback: 5000,
+        });
+        const fitAddon = new FitAddon.FitAddon();
+        term.loadAddon(fitAddon);
+        term.open(container);
+        if (container.clientWidth > 0 && container.clientHeight > 0) {
+          fitAddon.fit();
+        }
+
+        // Setup ResizeObserver for responsive resize and to avoid logo distortion!
+        let ro = null;
+        if (window.ResizeObserver) {
+          ro = new ResizeObserver(() => {
+            if (container.clientWidth > 0 && container.clientHeight > 0) {
+              fitAddon.fit();
+              const inst = xtermInstances[idx];
+              if (inst?.ws && inst.ws.readyState === WebSocket.OPEN) {
+                inst.ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+              }
+            }
+          });
+          ro.observe(container);
+        }
+
+        xtermInstances[idx] = { term, fitAddon, ws: null, attachedSessionId: null, ro };
+
+        term.onData(data => {
+          if (xtermInstances[idx]?.replaying) return;
+          // Bare mouse-motion reports (ESC[<35;x;yM) are sent for every pixel the pointer moves over a TUI that asked for
+          // mouse tracking. Agents cannot use them, and the stray ESC bytes can interrupt typing (e.g. close a "/" menu).
+          data = data.replace(/\x1b\[<35;\d+;\d+M/g, '');
+          if (!data) return;
+          noteKeys(data);
+          sendKeys(idx, data);
+        });
+        if (term.textarea) {
+          term.textarea.addEventListener('compositionstart', () => noteIme(true));
+          term.textarea.addEventListener('compositionend', () => noteIme(false));
+        }
+
+        // Wheel over a terminal scrolls the page (to reach other tiles) unless Shift is held.
+        container.addEventListener('wheel', (e) => {
+          if (!pageWheel.value || e.shiftKey || maximizedIdx.value !== null) return;
+          const sc = document.getElementById('studio-scroll');
+          if (!sc || sc.scrollHeight <= sc.clientHeight) return;
+          e.preventDefault();
+          e.stopPropagation();
+          sc.scrollTop += e.deltaY * (e.deltaMode === 1 ? 16 : (e.deltaMode === 2 ? sc.clientHeight : 1));
+        }, { capture: true, passive: false });
+
+        term.onResize(size => {
+          const inst = xtermInstances[idx];
+          if (inst?.ws && inst.ws.readyState === WebSocket.OPEN) {
+            inst.ws.send(JSON.stringify({ type: 'resize', cols: size.cols, rows: size.rows }));
+          }
+        });
+      } else {
+        if (container.clientWidth > 0 && container.clientHeight > 0) {
+          xtermInstances[idx].fitAddon.fit();
+        }
+      }
+    };
+
+    const attachSessionToPane = (paneIdx, sessionId) => {
+      initOrResizeTerminal(paneIdx);
+      const inst = xtermInstances[paneIdx];
+      if (!inst) return;
+
+      if (inst.ws) {
+        inst.ws.close();
+        inst.ws = null;
+      }
+      inst.term.clear();
+      inst.attachedSessionId = sessionId;
+
+      if (!sessionId) return;
+
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const wsUrl = `${protocol}//${window.location.host}/ws/terminal/${sessionId}`;
+      const ws = new WebSocket(wsUrl);
+      ws.binaryType = 'arraybuffer';
+
+      ws.onopen = () => {
+        const container = document.getElementById(`term-container-${paneIdx}`);
+        if (container && container.clientWidth > 0 && container.clientHeight > 0) {
+          inst.fitAddon.fit();
+        }
+        ws.send(JSON.stringify({ type: 'resize', cols: inst.term.cols, rows: inst.term.rows }));
+        // Only the pane the user is working in may take keyboard focus; otherwise the last websocket
+        // to open (usually a worker) silently steals keystrokes meant for the focused pane.
+        if (paneIdx === focusedPaneIdx.value) inst.term.focus();
+      };
+
+      inst.replaying = true; // drop the terminal's auto-replies to queries found in the replayed history
+      setTimeout(() => { if (inst.ws === ws) inst.replaying = false; }, 3000); // safety net if the marker never arrives
+      ws.onmessage = (event) => {
+        if (event.data instanceof ArrayBuffer) {
+          inst.term.write(new Uint8Array(event.data));
+        } else if (event.data === '{"type":"replay_done"}') {
+          inst.term.write('', () => { inst.replaying = false; }); // after xterm has processed (and answered) the replay
+        } else {
+          inst.term.write(event.data);
+        }
+      };
+
+      ws.onclose = () => {
+        inst.term.write('\r\n\x1b[31m[WebSocket connection closed]\x1b[0m\r\n');
+      };
+
+      inst.ws = ws;
+    };
+
+    // Pane 0 is reserved for the orchestrator; new terminals go to the first free worker slot.
+    const getSmartTargetPaneIdx = (preferredIdx = null) => {
+      if (preferredIdx !== null && preferredIdx !== undefined && preferredIdx >= 0 && preferredIdx < MAX_PANES) return preferredIdx;
+      const free = panes.value.findIndex((p, i) => i >= 1 && !p.sessionId);
+      return free === -1 ? MAX_PANES - 1 : free;
+    };
+
+    const detachPane = (idx) => {
+      const sid = panes.value[idx].sessionId;
+      if (sid) dismissedSessions.add(sid);
+      clearPane(idx);
+    };
+
+    const openLaunchModal = (preferredIdx = null) => {
+      targetPaneIdxForLaunch.value = preferredIdx;
+      newSession.value = {
+        name: `Agent-${sessions.value.length + 1}`,
+        profile_id: (profiles.value.find(p => !runningCount(p.id)) || profiles.value[0] || {}).id || 'acc1',
+        mode: 'plan',
+        cwd: recentWorkspaces.value[0] || homeDir.value,
+        command: 'agy --mode plan',
+        task_id: null
+      };
+      showLaunchModal.value = true;
+    };
+
+    const setSessionMode = (mode) => {
+      newSession.value.mode = mode;
+      if (mode === 'plan') {
+        newSession.value.command = 'agy --mode plan';
+      } else if (mode === 'accept-edits') {
+        newSession.value.command = 'agy --mode accept-edits';
+      } else if (mode === 'interactive') {
+        newSession.value.command = 'agy';
+      }
+    };
+
+    const confirmLaunchSession = async () => {
+      try {
+        const paneIdx = getSmartTargetPaneIdx(targetPaneIdxForLaunch.value);
+        initOrResizeTerminal(paneIdx);
+        const existingInst = xtermInstances[paneIdx];
+        const termCols = existingInst?.term?.cols || 80;
+        const termRows = existingInst?.term?.rows || 28;
+
+        const payload = {
+          ...newSession.value,
+          cols: termCols,
+          rows: termRows
+        };
+
+        const res = await fetch('/api/sessions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const created = await res.json();
+        if (!res.ok) { alert(created.detail || 'Không thể tạo session'); return; }
+        showLaunchModal.value = false;
+        await fetchSessions();
+
+        assignSession(paneIdx, created.session_id);
+        currentTab.value = 'studio';
+        nextTick(() => {
+          attachSessionToPane(paneIdx, created.session_id);
+          focusPane(paneIdx);
+        });
+      } catch (e) {
+        alert('Lỗi tạo session: ' + e);
+      }
+    };
+
+    const killSession = async (sessionId) => {
+      if (!confirm('Bạn có chắc muốn dừng và tắt hẳn terminal session này?')) return;
+      await fetch(`/api/sessions/${sessionId}`, { method: 'DELETE' });
+      panes.value.forEach((p, idx) => { if (p.sessionId === sessionId) clearPane(idx); });
+      await fetchSessions();
+    };
+
+    const sendQuickKey = (keyStr) => {
+      const idx = focusedPaneIdx.value;
+      if (!wsOpen(idx)) return;
+      sendKeys(idx, keyStr);
+      nextTick(() => xtermInstances[idx]?.term.focus());
+    };
+
+    const restartPaneSession = async (paneIdx) => {
+      const sid = panes.value[paneIdx]?.sessionId;
+      if (!sid) return;
+      try {
+        const res = await fetch(`/api/sessions/${sid}/restart`, { method: 'POST' });
+        const newSess = await res.json();
+        await fetchSessions();
+        panes.value[paneIdx].sessionId = newSess.session_id;
+        nextTick(() => {
+          attachSessionToPane(paneIdx, newSess.session_id);
+          focusPane(paneIdx);
+        });
+      } catch (e) {
+        alert('Lỗi khởi động lại session: ' + e);
+      }
+    };
+
+    const sendTerminalInput = () => {
+      const text = terminalInputText.value;
+      if (!text) return;
+      const idx = focusedPaneIdx.value;
+      if (!wsOpen(idx)) {
+        alert('Vui lòng chọn hoặc bật một ô terminal đang hoạt động.');
+        return;
+      }
+      if (text.startsWith('/')) {
+        sendKeys(idx, '\x1b');
+        setTimeout(() => sendKeys(idx, `${text}\r`), 50);
+      } else {
+        sendKeys(idx, `${text}\r`);
+      }
+      terminalInputText.value = '';
+      nextTick(() => xtermInstances[idx]?.term.focus());
+    };
+
+    const executeSlashCommand = (cmdStr) => {
+      const idx = focusedPaneIdx.value;
+      if (!wsOpen(idx)) {
+        alert('Vui lòng chọn một ô terminal đang hoạt động.');
+        return;
+      }
+      showSlashDropdown.value = false;
+      // Send Esc to cleanly cancel any open popup/menu, DO NOT send Ctrl+C (\x03)
+      sendKeys(idx, '\x1b');
+      setTimeout(() => {
+        sendKeys(idx, `${cmdStr}\r`);
+        nextTick(() => xtermInstances[idx]?.term.focus());
+      }, 60);
+    };
+
+    // ---------------- Command Center ----------------
+    const STATE_META = {
+      busy: ['Đang chạy', 'text-sky-300 border-sky-700 bg-sky-950'],
+      waiting: ['Chờ bạn duyệt', 'text-amber-300 border-amber-600 bg-amber-950 animate-pulse'],
+      ready: ['Sẵn sàng', 'text-emerald-300 border-emerald-700 bg-emerald-950'],
+      starting: ['Đang khởi động', 'text-slate-300 border-slate-600 bg-slate-800'],
+      stopped: ['Đã dừng', 'text-rose-300 border-rose-800 bg-rose-950'],
+      idle: ['Chưa chạy', 'text-slate-400 border-slate-700 bg-slate-800']
+    };
+    const stateText = (st) => (STATE_META[st || 'idle'] || STATE_META.idle)[0];
+    const stateClass = (st) => (STATE_META[st || 'idle'] || STATE_META.idle)[1];
+    const workerById = (id) => orchestratorWorkers.value.find(w => w.profile_id === id);
+    const workerLabel = (w) => `${w.name} · ${w.role_tag} · ${w.email} (${w.profile_id})`;
+    const workerNameOf = (id) => workerById(id)?.name || id;
+    const duplicateEmailWorkers = computed(() => orchestratorWorkers.value.filter(w => w.duplicate_email));
+    const ccAssignableWorkers = computed(() => orchestratorWorkers.value.filter(w => !w.is_orchestrator));
+    const formatLogTime = (ts) => ts ? new Date(ts * 1000).toLocaleTimeString('vi-VN') : '';
+
+    const ccAddItem = () => {
+      const used = new Set(ccItems.value.map(i => i.profile_id));
+      const free = ccAssignableWorkers.value.find(w => !used.has(w.profile_id));
+      ccItems.value.push({ profile_id: (free || ccAssignableWorkers.value[0] || {}).profile_id || 'acc2', title: '', mode: 'accept-edits', prompt: '' });
+    };
+    const ccRemoveItem = (idx) => ccItems.value.splice(idx, 1);
+    const ccItemConflict = (it, idx) => ccItems.value.some((o, j) => j !== idx && o.profile_id === it.profile_id);
+    const ccPlanValid = computed(() => ccItems.value.length > 0 && ccItems.value.every((it, i) => it.prompt.trim() && !ccItemConflict(it, i)));
+
+    const fetchCcLog = async () => {
+      try {
+        const res = await fetch('/api/orchestrator/log?limit=50');
+        const data = await res.json();
+        const openIds = new Set(ccLog.value.filter(e => e._open).map(e => e.id));
+        ccLog.value = data.map(e => ({ ...e, _open: openIds.has(e.id) }));
+      } catch (e) { console.error('log', e); }
+    };
+    const paneProfileId = (idx) => getPaneSession(panes.value[idx]?.sessionId)?.profile_id || null;
+    const paneState = (idx) => {
+      const pid = paneProfileId(idx);
+      if (!pid) return 'idle';
+      if (pid === 'claude') return claude.value.state;
+      return workerById(pid)?.state || 'idle';
+    };
+    const paneRole = (idx) => workerById(paneProfileId(idx))?.role_tag || '';
+    const roleOptionsFor = (idx) => { const cur = paneRole(idx); return cur && !ROLE_OPTIONS.includes(cur) ? [cur, ...ROLE_OPTIONS] : ROLE_OPTIONS; };
+    const setPaneRole = async (idx, role) => {
+      const pid = paneProfileId(idx);
+      if (!pid) return;
+      await fetch(`/api/profiles/${pid}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ role_tag: role }) });
+      await Promise.all([fetchProfiles(), fetchOrchestratorWorkers()]);
+    };
+
+    const onPaneDragStart = (idx, e) => {
+      dragPaneIdx.value = idx;
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', String(idx));
+    };
+    const onPaneDrop = async (targetIdx) => {
+      const from = dragPaneIdx.value;
+      dragPaneIdx.value = null;
+      dragOverIdx.value = null;
+      if (from === null || from === targetIdx) return;
+      const a = panes.value[from].sessionId;
+      const b = panes.value[targetIdx].sessionId;
+      panes.value[from].sessionId = b;
+      panes.value[targetIdx].sessionId = a;
+      [from, targetIdx].forEach(i => { if (i > 0 && !panes.value[i].sessionId) disposePaneTerminal(i); });
+      nextTick(() => setTimeout(() => { attachSessionToPane(from, b); attachSessionToPane(targetIdx, a); attachPendingPanes(); }, 30));
+      // Whoever sits in the top pane is the orchestrator.
+      if (from === 0 || targetIdx === 0) {
+        const pid = paneProfileId(0);
+        if (pid) await setOrchestrator(pid);
+      }
+    };
+
+    const fetchClaude = async () => {
+      try {
+        const res = await fetch('/api/orchestrator/claude');
+        claude.value = await res.json();
+        claudeSessionId.value = claude.value.status === 'running' ? claude.value.session_id : null;
+      } catch (e) { console.error('claude', e); }
+    };
+    const refreshCommandCenter = async () => { await Promise.all([fetchOrchestratorWorkers(), fetchCcLog(), fetchClaude(), fetchTasks()]); };
+
+    const ccRunPlan = async () => {
+      isRunningPlan.value = true;
+      try {
+        const res = await fetch('/api/orchestrator/plan/run', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ goal: ccGoal.value, items: ccItems.value.map(i => ({ profile_id: i.profile_id, prompt: i.prompt.trim(), title: i.title || null, mode: i.mode, cwd: ccCwd.value || null })) })
+        });
+        const data = await res.json();
+        if (!res.ok) { alert(data.detail || 'Không thể phát lệnh'); return; }
+        const failed = data.results.filter(r => r.status !== 'sent');
+        if (failed.length) alert('Một số lệnh thất bại:\n' + failed.map(f => `${f.profile_id}: ${f.error}`).join('\n'));
+        else ccItems.value = [];
+        await fetchTasks();
+        await refreshCommandCenter();
+      } catch (e) { alert('Lỗi phát lệnh: ' + e); }
+      finally { isRunningPlan.value = false; }
+    };
+
+    const ccCollect = async (entry) => {
+      try {
+        const res = await fetch(`/api/orchestrator/log/${entry.id}/collect`, { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) { alert(data.detail || 'Không lấy được kết quả'); return; }
+        await fetchCcLog();
+        const e2 = ccLog.value.find(x => x.id === entry.id); if (e2) e2._open = true;
+      } catch (e) { alert('Lỗi: ' + e); }
+    };
+
+    const setOrchestrator = async (id) => {
+      try {
+        const res = await fetch('/api/orchestrator/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ orchestrator_profile: id }) });
+        if (!res.ok) { const d = await res.json(); alert(d.detail || 'Lỗi'); }
+        await fetchOrchestratorWorkers();
+      } catch (e) { alert('Lỗi: ' + e); }
+    };
+
+    const startClaudeOrchestrator = async () => {
+      try {
+        const res = await fetch('/api/orchestrator/claude', { method: 'POST' });
+        const sess = await res.json();
+        if (!res.ok) { alert(sess.detail || 'Không khởi chạy được Claude'); return; }
+        await fetchSessions();
+        dismissedSessions.delete(sess.session_id);
+        const prev = panes.value.findIndex(p => p.sessionId === sess.session_id);
+        if (prev > 0) clearPane(prev);
+        panes.value[0].sessionId = sess.session_id;
+        currentTab.value = 'studio';
+        focusedPaneIdx.value = 0;
+        await setOrchestrator('claude');
+        nextTick(() => {
+          attachSessionToPane(0, sess.session_id);
+          focusPane(0);
+        });
+      } catch (e) { alert('Lỗi khởi chạy Claude: ' + e); }
+    };
+
+    // Orchestrator Hub methods
+    const fetchOrchestratorWorkers = async () => {
+      isRefreshingWorkers.value = true;
+      try {
+        const [statRes, workRes] = await Promise.all([
+          fetch('/api/orchestrator/status'),
+          fetch('/api/orchestrator/workers')
+        ]);
+        const statData = await statRes.json();
+        const workData = await workRes.json();
+        if (statData.orchestrator_profile) {
+          orchestratorProfile.value = statData.orchestrator_profile;
+        }
+        claudeSessionId.value = statData.claude_session_id || null;
+        if (!orchestratorKnown.value) { orchestratorKnown.value = true; syncPanesWithSessions(); }
+        if (Array.isArray(workData)) {
+          orchestratorWorkers.value = workData;
+        }
+      } catch (e) {
+        console.error('Error fetching orchestrator data:', e);
+      } finally {
+        isRefreshingWorkers.value = false;
+      }
+    };
+
+    // Profile actions
+    const loginProfileOAuth = async (profileId) => {
+      const p = getProfile(profileId);
+      const emailNote = p?.email ? ` (${p.email})` : '';
+      if (!confirm(`Khởi chạy phiên đăng nhập Google cho ${profileId}${emailNote}? Token/cấu hình cũ của profile sẽ được chuyển vào ~/.agy_profiles/_backup/ (không xoá) và một terminal OAuth sẽ được mở.`)) return;
+      try {
+        const res = await fetch(`/api/profiles/${profileId}/login`, { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) { alert(data.detail || 'Không thể bắt đầu đăng nhập'); return; }
+        await fetchSessions();
+        const paneIdx = getSmartTargetPaneIdx(null);
+        assignSession(paneIdx, data.session.session_id);
+        currentTab.value = 'studio';
+        nextTick(() => {
+          attachSessionToPane(paneIdx, data.session.session_id);
+          focusPane(paneIdx);
+        });
+      } catch (e) {
+        alert('Lỗi khởi tạo đăng nhập: ' + e);
+      }
+    };
+
+    const quickPingProfile = async (profileId) => {
+      const payload = {
+        name: `Ping: ${profileId}`,
+        profile_id: profileId,
+        cwd: homeDir.value,
+        command: "agy -p 'ping' --model gemini-3.8-flash-low",
+        task_id: null
+      };
+      const res = await fetch('/api/sessions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      if (!res.ok) { alert(data.detail || 'Không thể tạo session'); return; }
+      await fetchSessions();
+      const paneIdx = getSmartTargetPaneIdx(null);
+      assignSession(paneIdx, data.session_id);
+      currentTab.value = 'studio';
+      nextTick(() => {
+        attachSessionToPane(paneIdx, data.session_id);
+        focusPane(paneIdx);
+      });
+    };
+
+    const quickLaunchProfile = (profileId) => {
+      targetPaneIdxForLaunch.value = null; // Smart auto-allocate pane
+      newSession.value = {
+        name: `${profileId}-Session`,
+        profile_id: profileId,
+        mode: 'plan',
+        cwd: recentWorkspaces.value[0] || homeDir.value,
+        command: 'agy',
+        task_id: null
+      };
+      showLaunchModal.value = true;
+    };
+
+    const openEditProfileModal = (prof) => {
+      editProfileForm.value = {
+        id: prof.id,
+        alias: prof.name,
+        email: prof.email,
+        role_tag: prof.role_tag
+      };
+      showEditProfileModal.value = true;
+    };
+
+    const confirmSaveProfile = async () => {
+      const pid = editProfileForm.value.id;
+      if (!pid) return;
+      try {
+        await fetch(`/api/profiles/${pid}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            alias: editProfileForm.value.alias,
+            email: editProfileForm.value.email,
+            role_tag: editProfileForm.value.role_tag
+          })
+        });
+        showEditProfileModal.value = false;
+        fetchProfiles();
+      } catch (e) {
+        alert('Lỗi lưu profile: ' + e);
+      }
+    };
+
+    const openNewProfileModal = async () => {
+      const nextNum = profiles.value.length + 1;
+      const pid = prompt(`Nhập mã Profile mới (vd: acc${nextNum}):`, `acc${nextNum}`);
+      if (!pid) return;
+      await fetch('/api/profiles', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ profile_id: pid })
+      });
+      fetchProfiles();
+    };
+
+    const openWorktreeModal = () => {
+      newWorktree.value = {
+        branch_name: '',
+        target_path: `${worktreeRepo.value}-worktree`,
+        base_branch: 'main'
+      };
+      showWorktreeModal.value = true;
+    };
+
+    const confirmCreateWorktree = async () => {
+      if (!newWorktree.value.branch_name || !newWorktree.value.target_path) return;
+      try {
+        const res = await fetch('/api/git/worktrees', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            repo_path: worktreeRepo.value,
+            branch_name: newWorktree.value.branch_name,
+            target_path: newWorktree.value.target_path,
+            base_branch: newWorktree.value.base_branch
+          })
+        });
+        const data = await res.json();
+        if (data.error) alert(data.error);
+        else {
+          alert('Tạo Git Worktree thành công!');
+          showWorktreeModal.value = false;
+          fetchWorktrees();
+        }
+      } catch (e) {
+        alert('Lỗi: ' + e);
+      }
+    };
+
+    const launchSessionAtDir = (dirPath) => {
+      newSession.value = {
+        name: `Worktree: ${dirPath.split('/').pop()}`,
+        profile_id: 'acc1',
+        mode: 'accept-edits',
+        cwd: dirPath,
+        command: 'agy --mode accept-edits',
+        task_id: null
+      };
+      showLaunchModal.value = true;
+    };
+
+    const ensureStudioAttached = () => {
+      nextTick(() => {
+        setTimeout(() => {
+          attachPendingPanes();
+          visiblePaneIdxs.value.forEach(idx => {
+            const inst = xtermInstances[idx];
+            const container = document.getElementById(`term-container-${idx}`);
+            if (inst && container && container.clientWidth > 0 && container.clientHeight > 0) {
+              inst.fitAddon.fit();
+              if (inst.ws && inst.ws.readyState === WebSocket.OPEN) {
+                inst.ws.send(JSON.stringify({ type: 'resize', cols: inst.term.cols, rows: inst.term.rows }));
+              }
+            }
+          });
+          focusPane(focusedPaneIdx.value);
+        }, 80);
+      });
+    };
+
+    watch(currentTab, (newTab) => {
+      if (newTab === 'studio') {
+        ensureStudioAttached();
+        refreshCommandCenter();
+      }
+    });
+
+    onMounted(async () => {
+      await Promise.all([
+        fetchTasks(),
+        fetchSessions(),
+        fetchProfiles(),
+        fetchWorkspaces(),
+        fetchSystemStats(),
+        fetchOrchestratorWorkers()
+      ]);
+      
+      syncPanesWithSessions();
+      await fetchClaude();
+      await fetchDoctor();
+      let seen = false;
+      try { seen = !!localStorage.getItem('agy.setupSeen'); } catch (e) { /* ignore */ }
+      if (!seen && (!doctor.value.ready || !doctor.value.checks.find(c => c.id === 'accounts')?.ok)) showGuideModal.value = true;
+
+      ensureStudioAttached();
+
+      setInterval(() => {
+        fetchSystemStats();
+        fetchSessions();
+        fetchProfiles();
+        if (currentTab.value === 'studio') {
+          refreshCommandCenter();
+          attachPendingPanes();
+        }
+      }, 3500);
+
+      window.addEventListener('resize', () => {
+        visiblePaneIdxs.value.forEach(idx => {
+          xtermInstances[idx]?.fitAddon?.fit();
+        });
+      });
+    });
+
+    return {
+      currentTab,
+      tasks,
+      sessions,
+      profiles,
+      recentWorkspaces,
+      sysStats,
+      focusedPaneIdx,
+      panes,
+      activeSessionsCount,
+      showGuideModal, doctor, doctorProblems, fetchDoctor, closeGuide,
+      showSlashDropdown,
+      executeSlashCommand,
+      showEditProfileModal,
+      editProfileForm,
+      showLaunchModal,
+      showTaskModal,
+      showWorktreeModal,
+      newSession,
+      newTask,
+      newWorktree,
+      worktreeRepo,
+      worktreesList,
+      getProfile,
+      getProfileEmail,
+      getTasksByStage,
+      moveTaskStage,
+      deleteTask,
+      openTaskModal,
+      confirmCreateTask,
+      focusPane,
+      getPaneSession,
+      openLaunchModal,
+      setSessionMode,
+      confirmLaunchSession,
+      killSession,
+      sendQuickKey,
+      loginProfileOAuth,
+      quickPingProfile,
+      quickLaunchProfile,
+      openEditProfileModal,
+      confirmSaveProfile,
+      openNewProfileModal,
+      fetchWorktrees,
+      openWorktreeModal,
+      confirmCreateWorktree,
+      launchSessionAtDir,
+      termFontSize, maximizedIdx, paneGridStyle, toggleMaximize, onSizeInput,
+      accountOptions, claudeEmail, claudeSharesWith, onModalAccountChange,
+      onPaneSelect, orchestratorIdentity, claudeLogin, newTerminalFromPane, loginFromPane,
+      lastKeys, imeWarn, tileW, tileH, orchH, orchFont, pageWheel, saveLayoutPrefs, visiblePaneIdxs, workerTileIdxs, runningCount,
+      syncEnabled, syncMembers, syncCount, toggleSync, syncSelectAll, syncSelectNone, toggleSyncMember,
+      drawerOpen, drawerTab, drawerTabs, dragPaneIdx, dragOverIdx, paneProfileId, paneState, paneRole, roleOptionsFor, setPaneRole, onPaneDragStart, onPaneDrop,
+      claude, progressColumns, getTasksByStage, moveTaskStage, deleteTask, openTaskModal,
+      claudeSessionId, ccGoal, ccCwd, ccItems, ccLog, isRunningPlan,
+      stateText, stateClass, workerById, workerLabel, workerNameOf, duplicateEmailWorkers, ccAssignableWorkers, formatLogTime,
+      ccAddItem, ccRemoveItem, ccItemConflict, ccPlanValid, refreshCommandCenter,
+      ccRunPlan, ccCollect, setOrchestrator, startClaudeOrchestrator,
+      orchestratorProfile,
+      orchestratorWorkers,
+      isRefreshingWorkers,
+      terminalInputText,
+      restartPaneSession,
+      sendTerminalInput,
+      fetchOrchestratorWorkers,
+      ensureStudioAttached
+    };
+  }
+}).mount('#app');
+</script>
+
+</body>
+</html>
