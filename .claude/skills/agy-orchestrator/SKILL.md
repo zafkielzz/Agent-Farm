@@ -23,10 +23,20 @@ python3 scripts/orchestrator.py collect --id <dispatch_id>  # store terminal tai
 python3 scripts/orchestrator.py control -t acc2 -a interrupt|esc|enter|clear|terminate
 ```
 
+## What to delegate and what to keep (read this first)
+You are the planner and coordinator, so **anything that is genuinely hard or complex stays with you**. Workers are for work that is *heavy but routine*.
+
+- **Keep for yourself:** architecture and design decisions, planning and splitting the goal, tricky or ambiguous debugging, anything needing deep reasoning or judgment, security-sensitive changes, reconciling or merging several workers' results, and the final review. Also trivial one-liners (a date, `pwd`, simple arithmetic).
+- **Delegate:** mechanical or high-volume work with a clear definition of done: reading and summarizing many files, bulk or boilerplate edits, writing tests from a clear spec, running a test suite and reporting failures, searching a codebase, repeating the same change in several places. Independent pieces can run in parallel on different workers.
+- Hard problem that also has a large mechanical part: you do the thinking, then hand the mechanical part over with exact instructions.
+- Verify what matters: for risky parts read the changed files or re-run the tests yourself instead of trusting a summary.
+
 ## Workflow
 1. Break the user's goal into independent tasks; pick workers by their mode (and the role note, if the user set one). Give each worker a **self-contained** prompt (workers share no context with you): goal, exact files/dirs (`--cwd`), constraints, definition of done, and "reply with a short summary when finished".
 2. Different workers editing the same repo must use separate git worktrees (hub tab "Git Worktrees") or disjoint files.
-3. For one worker prefer a single call: `dispatch -t accN -p "..." --wait` (sends, waits until the terminal goes quiet, prints the compacted screen) - one tool call instead of dispatch + wait + read. For several workers in parallel dispatch each, then `wait`. Dispatch, then `wait` (use `run_in_background` for long waits, several workers in parallel), then collect results (`wait` already prints the compacted tail of the screen; use `read -n 40` only if you need more, `--full` to see rulers/spinners too). `wait` returns when the worker's terminal has produced no new output for `--settle` seconds (default 3) after the dispatch: a working agent keeps redrawing, an idle one is silent. That also happens when the agent is waiting for your approval, so `read` the screen to confirm it really finished (the output says if the hub saw an approval prompt).
+3. **Save your own tokens** (the point of delegating): for a worker that is not in `plan` mode use
+   `dispatch -t accN -p "..." --result-file --wait --result`. The worker writes its final answer to a small file and the call prints only that (a few lines), not the screen. For a `plan` worker (read-only) tell it to end with one `RESULT: ...` line and use `--wait --result`; the output is then just that block. Never paste a worker's raw output back into your context, and do not `read` the screen unless the answer looks wrong. With an `interactive` worker the file write may stop at an approval prompt (`CHỜ DUYỆT`): then tell the user.
+   For one worker prefer a single call: `dispatch -t accN -p "..." --wait` (sends, waits until the terminal goes quiet, prints the compacted screen) - one tool call instead of dispatch + wait + read. For several workers in parallel dispatch each, then `wait`. Dispatch, then `wait` (use `run_in_background` for long waits, several workers in parallel), then collect results (`wait` already prints the compacted tail of the screen; use `read -n 40` only if you need more, `--full` to see rulers/spinners too). `wait` returns when the worker's terminal has produced no new output for `--settle` seconds (default 3) after the dispatch: a working agent keeps redrawing, an idle one is silent. That also happens when the agent is waiting for your approval, so `read` the screen to confirm it really finished (the output says if the hub saw an approval prompt).
 4. Verify worker output yourself (read changed files / run tests) before reporting it as done. Report per-worker outcomes faithfully, including failures.
 5. If a worker is stuck: `read`, then `control -a esc` or `interrupt`, then re-dispatch with a clearer prompt. Use `terminate` only when asked.
 
@@ -55,4 +65,9 @@ One profile may have several running terminals (they share one D-Bus + keyring, 
 - Exit code 2 = timeout: `read` to see what the worker is doing; do not blindly re-dispatch.
 - "Working..." / spinner glyphs left on the screen do not mean busy: they stay as stale text after the agent finished. Trust the `wait` result (`✅ ... đã im lặng`), not those words, and do not `read` again to double-check unless the answer looks wrong.
 - Do not delegate trivial work (today's date, simple arithmetic, a single `pwd`): running it yourself takes seconds, a worker round trip takes tens of seconds. Delegate work that is heavy or can run in parallel.
+
+## Keeping your own context small
+- Give workers the whole task in one self-contained prompt; every correction round costs you several turns.
+- Ask for short results (<= 25 lines). The result file is capped by `--max-chars` (default 3000).
+- Run `/clear` between unrelated jobs: every turn of yours re-reads the whole conversation.
 

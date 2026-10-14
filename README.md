@@ -60,6 +60,7 @@ Claude Code reads `CLAUDE.md` and `.claude/skills/agy-orchestrator/` in this rep
 ```bash
 python3 scripts/orchestrator.py list                          # accounts, state (busy / waiting / ready)
 python3 scripts/orchestrator.py dispatch -t acc2 -p "..."     # type a prompt into a worker (--session <id> to pick a terminal; --wait to also wait for the result)
+python3 scripts/orchestrator.py dispatch -t acc2 -p "..." --result-file --wait --result   # cheapest: worker writes its answer to a file, only that is printed
 python3 scripts/orchestrator.py read -t acc2 -n 40            # read the worker's terminal screen
 python3 scripts/orchestrator.py wait -t acc2 --timeout 120    # wait until the worker's terminal has gone quiet (default 3s of silence)
 python3 scripts/orchestrator.py collect --id <dispatch_id>    # store a snapshot as that task's result (shown on the web)
@@ -67,6 +68,10 @@ python3 scripts/orchestrator.py control -t acc2 -a interrupt  # esc / enter / in
 ```
 
 Dispatching types the prompt into the worker's terminal exactly like a person would. Results are read back from the terminal screen (ANSI-stripped), not from a structured channel. A worker counts as *busy* while its terminal is producing output and *ready* once it has been silent for a few seconds, so a worker that is waiting for your approval also looks quiet (the hub flags approval prompts it recognizes as *waiting*). Hub refuses to dispatch to a busy or approval-waiting worker unless `--force` is given. An idle worker first gets one ESC (to close a popup that would swallow the prompt); if the terminal then shows no reaction at all, `wait` exits with code 4 and says the prompt probably did not arrive.
+
+### What to delegate
+
+The orchestrator is the planner: **hard or complex work (design, tricky debugging, security-sensitive changes, merging results, final review) stays with it.** Workers get work that is heavy but routine (bulk edits, reading many files, writing tests from a spec, running suites, searching). That is also where delegation pays off: the worker's long, noisy work consumes *its* quota instead of the orchestrator's, and `--result-file --wait --result` returns only a few lines to the orchestrator's context. For trivial tasks, doing it directly is cheaper than a delegation round trip. The same rules are in `.claude/skills/agy-orchestrator/SKILL.md`.
 
 ## Terminals that survive restarts (tmux)
 

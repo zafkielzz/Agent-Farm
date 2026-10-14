@@ -90,6 +90,10 @@ Dừng: `./stop.sh` (chỉ dừng tiến trình đang lắng nghe trên cổng, 
 
 ---
 
+### Giao việc gì, giữ lại việc gì
+
+Orchestrator là người lập kế hoạch: **việc khó, phức tạp (thiết kế, gỡ lỗi hóc búa, thay đổi nhạy cảm về bảo mật, hợp nhất kết quả, review cuối) do chính nó làm.** Worker nhận việc nặng nhưng mang tính cơ học (sửa hàng loạt, đọc nhiều file, viết test theo spec, chạy bộ test, tìm kiếm). Giao việc như vậy mới tiết kiệm token cho orchestrator: phần làm việc dài, nhiều chữ tốn quota của worker; lệnh `dispatch ... --result-file --wait --result` chỉ trả về vài dòng cuối cùng. Việc vặt thì tự làm, rẻ hơn một vòng giao việc. Quy tắc nằm trong `.claude/skills/agy-orchestrator/SKILL.md`.
+
 ## 🔁 Terminal không mất khi restart hub (tmux)
 
 Mỗi terminal chạy trong một session **tmux** riêng (socket `agyhub`); terminal trên web chỉ là client gắn vào. Tắt hoặc restart hub (kể cả `kill -9`) chỉ làm mất client: agent vẫn chạy, hub mới tự gắn lại và trình duyệt tự nối lại không cần tải trang.
@@ -108,6 +112,7 @@ Mở ô Orchestrator → danh sách chọn → **＋ Claude Code**. Claude Code 
 ```bash
 python3 scripts/orchestrator.py list                         # trạng thái các account
 python3 scripts/orchestrator.py dispatch -t acc2 -p "..."    # giao việc (--session <id> để chọn đúng terminal)
+python3 scripts/orchestrator.py dispatch -t acc2 -p "..." --result-file --wait --result   # rẻ nhất: worker ghi kết quả ra file, chỉ in file đó
 python3 scripts/orchestrator.py read -t acc2 -n 40           # đọc terminal của worker
 python3 scripts/orchestrator.py wait -t acc2 --timeout 120   # đợi worker xong
 python3 scripts/orchestrator.py collect --id <dispatch_id>   # lưu kết quả vào nhật ký trên web

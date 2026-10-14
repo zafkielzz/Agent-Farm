@@ -195,6 +195,7 @@ class DispatchPromptRequest(BaseModel):
     force: Optional[bool] = False
     session_id: Optional[str] = None  # target one specific terminal when a profile has several
     clear_popups: Optional[bool] = True  # send one ESC (after a pause) to an idle worker first, closing any overlay
+    result_file: Optional[bool] = False  # ask the worker to write its final answer to a file the orchestrator reads instead of the screen
 
 class PlanItem(BaseModel):
     profile_id: str
@@ -289,6 +290,7 @@ def save_workspaces(ws: List[str]):
 NON_ISOLATED_PROFILES = ("system", "default", "claude")
 CLAUDE_PROFILE = "claude"
 DISPATCH_LOG_FILE = DATA_DIR / "dispatch_log.json"
+RESULTS_DIR = DATA_DIR / "results"   # files workers write their final answers to (see dispatch --result-file)
 DISPATCH_LOG_MAX = 300
 
 LEAKY_ENV_VARS = (
@@ -1400,7 +1402,8 @@ async def get_orchestrator_workers():
 
 async def _dispatch_one(tgt: str, prompt: str, mode: Optional[str], cwd: Optional[str],
                         auto_start: bool, task_id: Optional[str] = None, title: Optional[str] = None,
-                        force: bool = False, session_id: Optional[str] = None, clear_popups: bool = True) -> Dict[str, Any]:
+                        force: bool = False, session_id: Optional[str] = None, clear_popups: bool = True,
+                        result_file: bool = False) -> Dict[str, Any]:
     if tgt not in ALL_AGENT_IDS:
         return {"profile_id": tgt, "status": "failed", "error": f"Unknown profile {tgt}"}
     sess = registry.get_by_profile(tgt, status="running")
@@ -1429,7 +1432,17 @@ async def _dispatch_one(tgt: str, prompt: str, mode: Optional[str], cwd: Optiona
     }
     if sess and sess.status == "running":
         entry["bytes_at_send"] = sess.bytes_total
-        await type_prompt(sess, prompt, clear_popups=clear_popups and state == "ready")
+        typed = prompt
+        if result_file:
+            if mode_of(sess.command) == "plan":
+                entry["result_file_skipped"] = "plan mode is read-only: the worker cannot write the result file"
+            else:
+                RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+                path = RESULTS_DIR / f"{entry['id']}.md"
+                entry["result_file"] = str(path)
+                typed = (f"{prompt}\n\n(When you are completely done, write your final answer to the file {path} - "
+                         f"concise, at most 25 lines, no preamble - then reply with only the word DONE.)")
+        await type_prompt(sess, typed, clear_popups=clear_popups and state == "ready")
         await asyncio.sleep(0.3)
         # Everything after this point is the agent's reaction (spinner, thinking...). If nothing follows, the prompt
         # probably never reached the input box and `wait` says so instead of reporting a silent "done".
@@ -1450,6 +1463,9 @@ async def _dispatch_one(tgt: str, prompt: str, mode: Optional[str], cwd: Optiona
         save_tasks(tasks)
     out = {"profile_id": tgt, "session_id": entry["session_id"], "status": entry["status"],
            "prompt": prompt, "dispatch_id": entry["id"], "mode": mode_of(sess.command) if sess else ""}
+    for k in ("result_file", "result_file_skipped"):
+        if entry.get(k):
+            out[k] = entry[k]
     if entry.get("error"):
         out["error"] = entry["error"]
     return out
@@ -1460,7 +1476,7 @@ async def dispatch_orchestrator_prompt(req: DispatchPromptRequest):
     if not prompt:
         raise HTTPException(status_code=400, detail="Prompt is required")
     targets = orchestrator_targets() if req.target_profile == "all" else [req.target_profile]
-    results = [await _dispatch_one(t, prompt, req.mode, req.cwd, bool(req.auto_start), req.task_id, req.title, bool(req.force), req.session_id, bool(req.clear_popups))
+    results = [await _dispatch_one(t, prompt, req.mode, req.cwd, bool(req.auto_start), req.task_id, req.title, bool(req.force), req.session_id, bool(req.clear_popups), bool(req.result_file))
                for t in targets]
     return {"results": results}
 
@@ -1503,7 +1519,11 @@ async def collect_dispatch_result(dispatch_id: str, lines: int = 60):
     sess = registry.get_by_profile(entry["profile_id"], status=None)
     if not sess:
         raise HTTPException(status_code=404, detail="Worker session no longer exists")
-    entry["result"] = sess.get_clean_output(lines=lines)
+    rf = entry.get("result_file")
+    if rf and Path(rf).is_file() and Path(rf).stat().st_size > 0:
+        entry["result"] = Path(rf).read_text(encoding="utf-8", errors="replace")[:20000]
+    else:
+        entry["result"] = sess.get_clean_output(lines=lines)
     entry["collected_at"] = time.time()
     entry["state_at_collect"] = detect_session_state(sess)
     save_dispatch_log(log)

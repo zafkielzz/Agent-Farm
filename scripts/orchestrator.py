@@ -40,6 +40,33 @@ def compact(text: str) -> str:
 
 MIN_SETTLE = 2.0  # the hub calls a terminal "busy" while it printed something in the last 2s
 
+_RESULT_LINE = re.compile(r"^\s*[•\-\*▸>]?\s*RESULT:")
+
+def extract_result_block(screen: str, max_lines: int = 40):
+    """The last `RESULT:` line of the screen and what follows it, up to a blank line or ruler. None if absent."""
+    lines = screen.splitlines()
+    for i in range(len(lines) - 1, -1, -1):
+        if _RESULT_LINE.match(lines[i]):
+            block = []
+            for l in lines[i:i + max_lines]:
+                if block and (not l.strip() or _DECOR_LINE.match(l)):
+                    break
+                block.append(l.rstrip())
+            return "\n".join(block)
+    return None
+
+def read_result_file(path, max_chars: int):
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            text = f.read().strip()
+    except OSError:
+        return None
+    if not text:
+        return None
+    if len(text) > max_chars:
+        text = text[:max_chars] + f"\n… (cắt bớt, file đầy đủ: {path})"
+    return text
+
 def http_get(url: str):
     req = request.Request(url, headers={"User-Agent": "agy-orchestrator-cli"})
     try:
@@ -128,9 +155,12 @@ def _dispatch_only(args):
         "auto_start": not args.no_auto_start,
         "force": getattr(args, "force", False),
         "session_id": getattr(args, "session", None),
-        "clear_popups": not getattr(args, "no_clear", False)
+        "clear_popups": not getattr(args, "no_clear", False),
+        "result_file": getattr(args, "result_file", False)
     }
-    print(f"🚀 Đang gửi lệnh đến {args.target}...")
+    quiet = getattr(args, "result", False)
+    if not quiet:
+        print(f"🚀 Đang gửi lệnh đến {args.target}...")
     res = http_post(url, payload)
     if "error" in res:
         print(f"❌ Lỗi gửi lệnh: {res['error']}")
@@ -141,8 +171,15 @@ def _dispatch_only(args):
     for r in results:
         status = r.get("status")
         if status == "sent":
-            print(f"✅ Gửi thành công đến {r['profile_id']} (Session: {r.get('session_id')}, chế độ: {r.get('mode') or '?'}{MODE_HINT.get(r.get('mode'), '')})!")
-            print(f"   📝 Prompt: \"{r.get('prompt')}\"")
+            if quiet:
+                print(f"✅ Đã gửi tới {r['profile_id']} (chế độ {r.get('mode') or '?'}{MODE_HINT.get(r.get('mode'), '')})")
+            else:
+                print(f"✅ Gửi thành công đến {r['profile_id']} (Session: {r.get('session_id')}, chế độ: {r.get('mode') or '?'}{MODE_HINT.get(r.get('mode'), '')})!")
+                print(f"   📝 Prompt: \"{r.get('prompt')}\"")
+            if r.get("result_file") and not quiet:
+                print(f"   📄 Worker sẽ ghi kết quả vào: {r['result_file']}")
+            if r.get("result_file_skipped"):
+                print(f"   ⚠️ Không dùng file kết quả: {r['result_file_skipped']}. Hãy dặn worker kết thúc bằng một dòng `RESULT: ...` rồi dùng --result.")
             sent_ok = True
         else:
             print(f"❌ Thất bại trên {r['profile_id']}: {r.get('error', 'Unknown error')}")
@@ -210,7 +247,9 @@ def cmd_wait(args):
            else f"{args.hub}/api/orchestrator/workers/{args.target}/output?lines=25")
     baseline = (entry.get("bytes_after_send") or entry.get("bytes_at_send")) if entry else None
     settle = max(args.settle, MIN_SETTLE)
-    print(f"⏳ Đang đợi {args.target} xử lý xong (im lặng {settle:g}s thì coi là xong; tối đa {args.timeout}s)...")
+    quiet = getattr(args, "result", False)
+    if not quiet:
+        print(f"⏳ Đang đợi {args.target} xử lý xong (im lặng {settle:g}s thì coi là xong; tối đa {args.timeout}s)...")
     start = time.time()
     first_reaction = None
     reacted = baseline is None            # without a baseline we cannot tell, so do not insist on a reaction
@@ -241,13 +280,35 @@ def cmd_wait(args):
             idle = res.get("idle_seconds", 0)
             waiting = res.get("state") == "waiting"
             note = "  ⚠️ đang chờ bạn duyệt/xác nhận" if waiting else ""
-            print(f"✅ {args.target} đã im lặng {idle:.1f}s. Trạng thái: {'waiting' if waiting else 'ready'}.{note}")
             # where the time went (measured by polling): useful to judge whether a delegation was worth it
             worked = max(waited - idle - (first_reaction or 0), 0)
             react = f"{first_reaction:.1f}s" if first_reaction is not None else "?"
-            print(f"⏱ Từ lúc bắt đầu đợi: bắt đầu phản ứng sau {react} · agent làm việc ~{worked:.1f}s · chờ im lặng {idle:.1f}s · tổng {waited:.1f}s")
-            print("\n--- [Màn hình hiện tại] ---")
+            if quiet:
+                print(f"✅ {args.target} xong ({'CHỜ DUYỆT' if waiting else 'ready'}) · tổng {waited:.1f}s = phản ứng {react} + làm ~{worked:.1f}s + im lặng {idle:.1f}s{note}")
+            else:
+                print(f"✅ {args.target} đã im lặng {idle:.1f}s. Trạng thái: {'waiting' if waiting else 'ready'}.{note}")
+                print(f"⏱ Từ lúc bắt đầu đợi: bắt đầu phản ứng sau {react} · agent làm việc ~{worked:.1f}s · chờ im lặng {idle:.1f}s · tổng {waited:.1f}s")
+            result_text, source = None, None
+            if entry and entry.get("result_file"):
+                result_text = read_result_file(entry["result_file"], args.max_chars)
+                source = "file kết quả" if result_text else None
             screen = res.get("output", "") if args.full else compact(res.get("output", ""))
+            if getattr(args, "result", False):
+                # Result-only mode: print just the answer (cheapest for the orchestrator to read).
+                if result_text is None:
+                    block = extract_result_block(res.get("output", ""))     # raw screen: rulers/blank lines end the block
+                    result_text = compact(block) if block else None
+                    source = "dòng RESULT:" if result_text else None
+                if result_text is None:
+                    result_text = "\n".join(screen.splitlines()[-args.tail:])
+                    source = "cuối màn hình (worker không ghi file kết quả và không có dòng RESULT:)"
+                print(f"📌 Kết quả [{source}]:")
+                print(result_text)
+                print()
+                return
+            if result_text:
+                print(f"\n--- [Kết quả trong file] ---\n{result_text}\n---------------------------")
+            print("\n--- [Màn hình hiện tại] ---")
             print("\n".join(screen.splitlines()[-args.tail:]))
             print("---------------------------\n")
             return
@@ -309,6 +370,9 @@ def main():
     p_disp.add_argument("--start-timeout", type=float, default=10.0, help="(với --wait) quá số giây này mà terminal không có output mới nào thì báo prompt có thể bị mất")
     p_disp.add_argument("--tail", type=int, default=12, help="(với --wait) số dòng cuối in ra")
     p_disp.add_argument("--full", action="store_true", help="(với --wait) giữ nguyên mọi dòng")
+    p_disp.add_argument("--result-file", action="store_true", help="Dặn worker ghi câu trả lời cuối ra một file rồi chỉ trả lời DONE (không dùng được với worker ở chế độ plan)")
+    p_disp.add_argument("--result", action="store_true", help="(với --wait) chỉ in kết quả: file kết quả > dòng RESULT: > cuối màn hình")
+    p_disp.add_argument("--max-chars", type=int, default=3000, help="(với --wait) tối đa số ký tự của file kết quả được in")
     p_disp.add_argument("--force", action="store_true", help="Gửi dù worker đang bận/chờ duyệt (có thể phá việc đang làm)")
     p_disp.set_defaults(func=cmd_dispatch)
 
@@ -337,6 +401,8 @@ def main():
     p_wait.add_argument("--start-timeout", type=float, default=10.0, help="Quá số giây này mà terminal không có output mới nào sau khi gửi thì báo prompt có thể bị mất")
     p_wait.add_argument("--tail", type=int, default=12, help="Số dòng cuối in ra khi xong")
     p_wait.add_argument("--full", action="store_true", help="Giữ nguyên mọi dòng (kể cả đường kẻ/spinner)")
+    p_wait.add_argument("--result", action="store_true", help="Chỉ in kết quả (file kết quả > dòng RESULT: > cuối màn hình): ít token nhất")
+    p_wait.add_argument("--max-chars", type=int, default=3000, help="Tối đa số ký tự của file kết quả được in")
     p_wait.set_defaults(func=cmd_wait)
 
     # interrupt / ctrl-c
