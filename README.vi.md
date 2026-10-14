@@ -18,12 +18,12 @@ Dashboard nội bộ (`http://localhost:8888`) để chạy và điều phối *
 
 1. **Terminal Studio** (trang chính)
    * Ô **Orchestrator** to nhất ở trên cùng (mặc định Claude Code, hoặc một account `agy` bất kỳ); các ô **worker** xếp bên dưới, mỗi session một ô, tự xuất hiện khi có session mới.
-   * Hai thanh kéo kích thước: một cho ô worker (rộng, cao, cỡ chữ đi cùng nhau), một riêng cho Orchestrator. Trang cuộn được; lăn chuột trên terminal để cuộn trang (giữ **Shift** để cuộn trong terminal).
+   * Hai thanh kéo kích thước: một cho ô worker (rộng, cao, cỡ chữ đi cùng nhau), một riêng cho Orchestrator. Trang cuộn được; lăn chuột trên terminal để cuộn nội dung terminal, hết chỗ cuộn thì trang cuộn (giữ **Alt** để luôn cuộn trang).
    * **Đồng bộ gõ**: bật rồi tick các ô muốn nhận phím, gõ ở một ô thì các ô đã tick nhận y hệt.
    * Kéo thả (⋮⋮) để đổi chỗ ô; kéo một worker lên ô Orchestrator để giao quyền Orchestrator.
    * Danh sách chọn ở mỗi ô: chọn session sẵn có, **＋ tạo terminal mới** (Claude hoặc một account `agy`, kể cả nhiều terminal cùng một account) hoặc **🔑 đăng nhập**.
    * Ngăn **Điều phối**: lập kế hoạch giao việc (mỗi worker một việc), bảng tiến độ, nhật ký lệnh và kết quả.
-2. **Tài Khoản Google**: danh sách account `agy` kèm email, vai trò, đăng nhập/đăng nhập lại; thẻ Claude Code ở đầu trang.
+2. **Tài Khoản Google**: danh sách account `agy` kèm email, ghi chú vai trò (tuỳ chọn), đăng nhập/đăng nhập lại; thẻ Claude Code ở đầu trang.
 3. **Git Worktrees**: tạo worktree riêng cho từng account để không sửa đè file nhau.
 
 ### Cô lập token

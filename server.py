@@ -59,7 +59,18 @@ def save_orchestrator_config(data: Dict[str, Any]):
 
 _EMAIL_CACHE: Dict[str, str] = {}
 
+_EMAIL_TTL = 30.0
+_EMAIL_SEEN: Dict[str, Any] = {}
+
 def detect_profile_email(acc: str) -> Optional[str]:
+    cached = _EMAIL_SEEN.get(acc)
+    if cached and time.time() - cached[1] < _EMAIL_TTL:
+        return cached[0]
+    value = _scan_profile_email(acc)
+    _EMAIL_SEEN[acc] = (value, time.time())
+    return value
+
+def _scan_profile_email(acc: str) -> Optional[str]:
     log_dir = PROFILES_DIR / acc / ".gemini" / "antigravity-cli" / "log"
     if not log_dir.exists():
         return None
@@ -183,6 +194,7 @@ class DispatchPromptRequest(BaseModel):
     title: Optional[str] = None
     force: Optional[bool] = False
     session_id: Optional[str] = None  # target one specific terminal when a profile has several
+    clear_popups: Optional[bool] = True  # send one ESC (after a pause) to an idle worker first, closing any overlay
 
 class PlanItem(BaseModel):
     profile_id: str
@@ -501,6 +513,28 @@ def tmux_list_sessions() -> List[str]:
     except Exception:
         return []
 
+_PANE_FLAGS_CACHE: Dict[str, Any] = {"ts": 0.0, "value": {}}
+
+def tmux_pane_flags() -> Dict[str, Dict[str, bool]]:
+    """Per tmux session: is the program in full-screen mode (alternate screen) and does it want mouse events?
+    tmux hides both from the browser terminal, so the UI needs them to decide what the mouse wheel should do."""
+    now = time.time()
+    if now - _PANE_FLAGS_CACHE["ts"] < 0.7:
+        return _PANE_FLAGS_CACHE["value"]
+    flags: Dict[str, Dict[str, bool]] = {}
+    try:
+        r = subprocess.run(_tmux_cmd("list-panes", "-a", "-F", "#{session_name} #{alternate_on} #{mouse_any_flag}"),
+                           capture_output=True, text=True, timeout=3)
+        if r.returncode == 0:
+            for line in r.stdout.splitlines():
+                parts = line.split()
+                if len(parts) == 3:
+                    flags[parts[0]] = {"alt": parts[1] == "1", "mouse": parts[2] == "1"}
+    except Exception:
+        pass
+    _PANE_FLAGS_CACHE.update(ts=now, value=flags)
+    return flags
+
 def tmux_kill_session(name: str):
     try:
         subprocess.run(_tmux_cmd("kill-session", "-t", name), capture_output=True, timeout=5)
@@ -562,6 +596,8 @@ class PTYSession:
         self.master_fd: Optional[int] = None
         self.pid: Optional[int] = None
         self.buffer = deque(maxlen=300_000)  # ~300KB history buffer
+        self.last_output_at = time.time()      # when the PTY last produced bytes (agents are silent when idle)
+        self.bytes_total = 0                   # monotonic count of bytes the PTY ever produced
         self.websockets: Set[WebSocket] = set()
         self.loop = asyncio.get_running_loop()
 
@@ -641,6 +677,8 @@ class PTYSession:
                 self._handle_exit()
                 return
             self.buffer.extend(chunk)
+            self.last_output_at = time.time()
+            self.bytes_total += len(chunk)
             # Broadcast to connected WS
             dead_ws = set()
             for ws in list(self.websockets):
@@ -684,6 +722,7 @@ class PTYSession:
             self.status = "stopped"
             # Clear email cache so newly authenticated emails are picked up immediately
             _EMAIL_CACHE.pop(self.profile_id, None)
+            _EMAIL_SEEN.pop(self.profile_id, None)
             if self.persistent:
                 tmux_kill_session(self.tmux_name)
             forget_session_meta(self.session_id)
@@ -710,11 +749,26 @@ class PTYSession:
                     pass
 
     def write_input(self, data: bytes):
-        if self.master_fd is not None and self.status == "running":
+        """Write to the PTY, retrying partial writes (the master is non-blocking and a PTY buffers only a few KB)."""
+        if self.master_fd is None or self.status != "running":
+            return
+        deadline = time.time() + 3.0
+        while data and time.time() < deadline:
             try:
-                os.write(self.master_fd, data)
+                n = os.write(self.master_fd, data)
+                data = data[n:]
+            except BlockingIOError:
+                time.sleep(0.01)
             except Exception:
-                pass
+                return
+
+    def bracketed_paste_enabled(self) -> bool:
+        """True if the program inside asked for bracketed paste (?2004h) and has not turned it off since."""
+        buf = bytes(self.buffer)
+        return buf.rfind(b"\x1b[?2004h") > buf.rfind(b"\x1b[?2004l")
+
+    def idle_seconds(self) -> float:
+        return time.time() - self.last_output_at
 
     def resize(self, rows: int, cols: int):
         if self.master_fd is not None:
@@ -766,6 +820,9 @@ class PTYSession:
             "exit_code": self.exit_code,
             "pid": self.pid,
             "persistent": self.persistent,
+            "mode": mode_of(self.command),
+            "alt_screen": bool(self.persistent and tmux_pane_flags().get(self.tmux_name, {}).get("alt")),
+            "app_mouse": bool(self.persistent and tmux_pane_flags().get(self.tmux_name, {}).get("mouse")),
             "connected_clients": len(self.websockets),
         }
 
@@ -927,16 +984,7 @@ async def get_profiles():
         detected_email = detect_profile_email(acc)
         email = meta.get("email") or detected_email or "Chưa đăng nhập"
         
-        # Default suggested roles
-        default_roles = {
-            "acc1": "Architect / Planner",
-            "acc2": "Core Implementer",
-            "acc3": "Feature Coder",
-            "acc4": "QA / Tester",
-            "acc5": "Reviewer & Docs",
-            "acc6": "Batch / Standby"
-        }
-        role_tag = meta.get("role_tag") or default_roles.get(acc, "Coder")
+        role_tag = meta.get("role_tag") or ""  # optional free-text label; informational only
         alias = meta.get("alias") or f"Account {acc.replace('acc', '')}"
 
         profiles.append({
@@ -994,6 +1042,7 @@ def reset_profile_auth(profile_id: str) -> Optional[str]:
         shutil.move(str(i), str(target))
     dest.chmod(0o700)
     _EMAIL_CACHE.pop(profile_id, None)
+    _EMAIL_SEEN.pop(profile_id, None)
     return str(dest)
 
 @app.post("/api/profiles/{profile_id}/login")
@@ -1065,7 +1114,9 @@ async def get_session_output(session_id: str, lines: int = 30):
     sess = registry.get(session_id)
     if not sess:
         raise HTTPException(status_code=404, detail="Session not found")
-    return {"session_id": session_id, "status": sess.status, "output": sess.get_clean_output(lines=lines)}
+    return {"session_id": session_id, "status": sess.status, "state": detect_session_state(sess),
+            "idle_seconds": round(sess.idle_seconds(), 2), "bytes_total": sess.bytes_total,
+            "output": sess.get_clean_output(lines=lines)}
 
 @app.post("/api/sessions")
 async def create_session(req: CreateSessionRequest):
@@ -1221,22 +1272,66 @@ async def create_git_worktree(req: CreateWorktreeRequest):
 # Orchestrator API Endpoints (Master Lead Agent acc1 controlling acc2..acc6)
 # -----------------------------------------------------------------------------
 ALL_AGENT_IDS = [f"acc{i}" for i in range(1, 7)]
+
+MODE_RE = re.compile(r"--mode[ =]([\w-]+)")
+
+def mode_of(command: Optional[str]) -> str:
+    """How the agent in a terminal was launched: plan / accept-edits / auto / interactive (plain agy), or "" for non-agy."""
+    cmd = (command or "").strip()
+    m = MODE_RE.search(cmd)
+    if m:
+        return m.group(1)
+    first = cmd.split()[0] if cmd.split() else ""
+    return "interactive" if first == "agy" or first.endswith("/agy") else ""
 WAITING_RE = re.compile(r"(\(y/n\)|\[y/N\]|\[Y/n\]|Do you want to|Allow this|Approve|Press Enter to|Proceed\?)", re.I)
 
+# Working agents keep redrawing (agy: no silent gap above ~0.2s was ever seen while it worked, even when running a tool);
+# idle ones are silent. Must not exceed the smallest --settle the CLI accepts, or `wait` could report "done" while the state is still "busy".
+BUSY_IF_OUTPUT_WITHIN = 2.0  # seconds
+
 def detect_session_state(sess: Optional["PTYSession"]) -> str:
-    """Heuristic state from the terminal tail: idle (no session) / stopped / busy / waiting / ready."""
+    """idle (no session) / stopped / starting / busy / waiting / ready.
+    "busy" means the terminal produced output in the last few seconds. Words such as "Thinking" are deliberately
+    NOT used: they stay on screen long after the agent finished and made every worker look busy forever."""
     if not sess:
         return "idle"
     if sess.status != "running":
         return "stopped"
-    tail = sess.get_clean_output(lines=12)
-    if not tail.strip():
+    if sess.bytes_total == 0:
         return "starting"
-    if "Generating" in tail or "Thinking" in tail or "esc to interrupt" in tail.lower():
+    if sess.idle_seconds() < BUSY_IF_OUTPUT_WITHIN:
         return "busy"
-    if WAITING_RE.search(tail):
+    if WAITING_RE.search(sess.get_clean_output(lines=12)):
         return "waiting"
     return "ready"
+
+async def wait_until_started(sess: "PTYSession", timeout: float = 25.0):
+    """After spawning an agent: wait for its UI to appear and settle, so the first keystrokes are not lost."""
+    end = time.time() + timeout
+    while time.time() < end:
+        if sess.bytes_total > 0 and sess.idle_seconds() >= 1.5:
+            return
+        await asyncio.sleep(0.3)
+
+async def type_prompt(sess: "PTYSession", prompt: str, clear_popups: bool = True):
+    """Type a prompt like a person.
+
+    * An overlay/popup (agy's "Artifacts" panel, a slash menu...) swallows keystrokes, so an idle worker first gets
+      one ESC. It is followed by a pause: ESC immediately followed by a letter is read as Alt+letter and eats the
+      first character.
+    * Enter is a separate keystroke so paste detection does not turn it into a newline.
+    """
+    if clear_popups:
+        sess.write_input(b"\x1b")
+        await asyncio.sleep(0.4)
+    text = prompt.replace("\r\n", "\n")
+    if "\n" in text and sess.bracketed_paste_enabled():
+        payload = b"\x1b[200~" + text.encode("utf-8") + b"\x1b[201~"   # keeps line breaks inside one message
+    else:
+        payload = text.encode("utf-8")
+    sess.write_input(payload)
+    await asyncio.sleep(0.15)
+    sess.write_input(b"\r")
 
 def load_dispatch_log() -> List[Dict[str, Any]]:
     if not DISPATCH_LOG_FILE.exists():
@@ -1289,6 +1384,7 @@ async def get_orchestrator_workers():
             "name": p["name"],
             "email": p["email"],
             "role_tag": p["role_tag"],
+            "mode": mode_of(sess.command) if sess else "",
             "is_orchestrator": (pid == orch_prof),
             "duplicate_email": email_count.get(p["email"], 0) > 1,
             "logged_in": bool(p.get("configured")),
@@ -1304,7 +1400,7 @@ async def get_orchestrator_workers():
 
 async def _dispatch_one(tgt: str, prompt: str, mode: Optional[str], cwd: Optional[str],
                         auto_start: bool, task_id: Optional[str] = None, title: Optional[str] = None,
-                        force: bool = False, session_id: Optional[str] = None) -> Dict[str, Any]:
+                        force: bool = False, session_id: Optional[str] = None, clear_popups: bool = True) -> Dict[str, Any]:
     if tgt not in ALL_AGENT_IDS:
         return {"profile_id": tgt, "status": "failed", "error": f"Unknown profile {tgt}"}
     sess = registry.get_by_profile(tgt, status="running")
@@ -1312,7 +1408,7 @@ async def _dispatch_one(tgt: str, prompt: str, mode: Optional[str], cwd: Optiona
         sess = registry.get(session_id)
         if not sess or sess.profile_id != tgt or sess.status != "running":
             return {"profile_id": tgt, "status": "failed", "error": f"Session {session_id} không chạy trên {tgt}"}
-    # Dispatch types ESC + prompt into the terminal; doing that to a worker that is mid-task or
+    # Dispatch types into the terminal; doing that to a worker that is mid-task or
     # waiting for an approval would corrupt its current job, so refuse unless forced.
     state = detect_session_state(sess) if sess else "idle"
     if state in ("busy", "waiting") and not force:
@@ -1324,7 +1420,7 @@ async def _dispatch_one(tgt: str, prompt: str, mode: Optional[str], cwd: Optiona
             cmd = f"agy --mode {mode}"
         sess = registry.create(name=f"{tgt}-{mode or 'Worker'}", profile_id=tgt,
                                cwd=cwd or str(Path.home()), command=cmd, task_id=task_id)
-        await asyncio.sleep(2.0)
+        await wait_until_started(sess)
 
     entry = {
         "id": uuid.uuid4().hex[:8], "ts": time.time(), "profile_id": tgt, "title": title or prompt[:60],
@@ -1332,9 +1428,12 @@ async def _dispatch_one(tgt: str, prompt: str, mode: Optional[str], cwd: Optiona
         "session_id": sess.session_id if sess else None, "status": "sent", "result": None,
     }
     if sess and sess.status == "running":
-        sess.write_input(b"\x1b")
-        await asyncio.sleep(0.05)
-        sess.write_input(f"{prompt}\r".encode("utf-8"))
+        entry["bytes_at_send"] = sess.bytes_total
+        await type_prompt(sess, prompt, clear_popups=clear_popups and state == "ready")
+        await asyncio.sleep(0.3)
+        # Everything after this point is the agent's reaction (spinner, thinking...). If nothing follows, the prompt
+        # probably never reached the input box and `wait` says so instead of reporting a silent "done".
+        entry["bytes_after_send"] = sess.bytes_total
     else:
         entry["status"] = "failed"
         entry["error"] = "Session is not running and could not be started"
@@ -1350,7 +1449,7 @@ async def _dispatch_one(tgt: str, prompt: str, mode: Optional[str], cwd: Optiona
                 t["updated_at"] = time.time()
         save_tasks(tasks)
     out = {"profile_id": tgt, "session_id": entry["session_id"], "status": entry["status"],
-           "prompt": prompt, "dispatch_id": entry["id"]}
+           "prompt": prompt, "dispatch_id": entry["id"], "mode": mode_of(sess.command) if sess else ""}
     if entry.get("error"):
         out["error"] = entry["error"]
     return out
@@ -1361,7 +1460,7 @@ async def dispatch_orchestrator_prompt(req: DispatchPromptRequest):
     if not prompt:
         raise HTTPException(status_code=400, detail="Prompt is required")
     targets = orchestrator_targets() if req.target_profile == "all" else [req.target_profile]
-    results = [await _dispatch_one(t, prompt, req.mode, req.cwd, bool(req.auto_start), req.task_id, req.title, bool(req.force), req.session_id)
+    results = [await _dispatch_one(t, prompt, req.mode, req.cwd, bool(req.auto_start), req.task_id, req.title, bool(req.force), req.session_id, bool(req.clear_popups))
                for t in targets]
     return {"results": results}
 
@@ -1488,6 +1587,8 @@ async def get_worker_output(profile_id: str, lines: int = 50, raw: bool = False)
         "session_id": sess.session_id,
         "status": sess.status,
         "state": detect_session_state(sess),
+        "idle_seconds": round(sess.idle_seconds(), 2),
+        "bytes_total": sess.bytes_total,
         "exit_code": sess.exit_code,
         "lines": lines,
         "output": output

@@ -59,14 +59,14 @@ Claude Code reads `CLAUDE.md` and `.claude/skills/agy-orchestrator/` in this rep
 
 ```bash
 python3 scripts/orchestrator.py list                          # accounts, state (busy / waiting / ready)
-python3 scripts/orchestrator.py dispatch -t acc2 -p "..."     # type a prompt into a worker (--session <id> to pick a terminal)
+python3 scripts/orchestrator.py dispatch -t acc2 -p "..."     # type a prompt into a worker (--session <id> to pick a terminal; --wait to also wait for the result)
 python3 scripts/orchestrator.py read -t acc2 -n 40            # read the worker's terminal screen
-python3 scripts/orchestrator.py wait -t acc2 --timeout 120    # wait until the worker looks idle
+python3 scripts/orchestrator.py wait -t acc2 --timeout 120    # wait until the worker's terminal has gone quiet (default 3s of silence)
 python3 scripts/orchestrator.py collect --id <dispatch_id>    # store a snapshot as that task's result (shown on the web)
 python3 scripts/orchestrator.py control -t acc2 -a interrupt  # esc / enter / interrupt / terminate
 ```
 
-Dispatching types the prompt into the worker's terminal exactly like a person would. Results are read back from the terminal screen (ANSI-stripped), not from a structured channel, and a worker's busy/waiting/ready state is a heuristic. Hub refuses to dispatch to a busy or approval-waiting worker unless `--force` is given.
+Dispatching types the prompt into the worker's terminal exactly like a person would. Results are read back from the terminal screen (ANSI-stripped), not from a structured channel. A worker counts as *busy* while its terminal is producing output and *ready* once it has been silent for a few seconds, so a worker that is waiting for your approval also looks quiet (the hub flags approval prompts it recognizes as *waiting*). Hub refuses to dispatch to a busy or approval-waiting worker unless `--force` is given. An idle worker first gets one ESC (to close a popup that would swallow the prompt); if the terminal then shows no reaction at all, `wait` exits with code 4 and says the prompt probably did not arrive.
 
 ## Terminals that survive restarts (tmux)
 

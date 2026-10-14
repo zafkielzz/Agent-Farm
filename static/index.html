@@ -203,10 +203,8 @@
                 <i class="fa-solid fa-grip-vertical"></i>
               </span>
               <span v-if="idx === 0" class="px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/50 text-[10px] font-bold uppercase flex items-center space-x-1"><i class="fa-solid fa-crown"></i><span>Orchestrator</span></span>
-              <select v-else-if="paneProfileId(idx) && /^acc/.test(paneProfileId(idx))" :value="paneRole(idx)" @change="setPaneRole(idx, $event.target.value)" @click.stop
-                      class="bg-slate-900 text-sky-300 border border-slate-700 rounded px-1.5 py-0.5 text-[10px] font-semibold max-w-[130px]" title="Đổi vai trò của account này">
-                <option v-for="r in roleOptionsFor(idx)" :key="r" :value="r">{{ r }}</option>
-              </select>
+              <span v-if="idx === 0 && paneMode(0)" :class="modeClass(paneMode(0))" class="text-[10px] px-1.5 py-0.5 rounded border font-mono" :title="modeHint(paneMode(0))">{{ paneMode(0) }}</span>
+              <span v-else-if="paneMode(idx)" :class="modeClass(paneMode(idx))" class="text-[10px] px-1.5 py-0.5 rounded border font-mono" :title="modeHint(paneMode(idx))">{{ paneMode(idx) }}</span>
               <span v-if="paneProfileId(idx) && (paneProfileId(idx) === 'claude' || /^acc/.test(paneProfileId(idx)))" class="text-[10px] px-1.5 py-0.5 rounded-full border" :class="stateClass(paneState(idx))">{{ stateText(paneState(idx)) }}</span>
               <label v-if="syncEnabled && idx !== 0" class="flex items-center space-x-1 text-[10px] text-fuchsia-300 cursor-pointer" title="Ô này tham gia đồng bộ gõ" @click.stop>
                 <input type="checkbox" :checked="!!syncMembers[idx]" @change="toggleSyncMember(idx)" class="accent-fuchsia-500"><span class="hidden xl:inline">sync</span>
@@ -539,8 +537,8 @@
 
             <!-- Role Badge & Status -->
             <div class="mt-3.5 flex items-center space-x-2">
-              <span class="text-[10px] px-2 py-0.5 rounded-full bg-indigo-950 text-indigo-300 border border-indigo-800/80 font-medium">
-                🎯 {{ prof.role_tag }}
+              <span v-if="prof.role_tag" class="text-[10px] px-2 py-0.5 rounded-full bg-indigo-950 text-indigo-300 border border-indigo-800/80 font-medium">
+                🏷️ {{ prof.role_tag }}
               </span>
               <span 
                 :class="prof.configured ? 'bg-emerald-950 text-emerald-400 border-emerald-800/80' : 'bg-amber-950 text-amber-400 border-amber-800/80'"
@@ -699,7 +697,7 @@
           <ul class="list-disc pl-5 space-y-1">
             <li><b>Kích thước:</b> thanh kéo trên thanh công cụ chỉnh đồng loạt mọi ô worker; thanh 👑 chỉnh riêng Orchestrator. Trang cuộn được.</li>
             <li><b>Đồng bộ gõ:</b> bật rồi tick các ô muốn nhận phím; gõ ở một ô là các ô đã tick nhận y hệt.</li>
-            <li><b>Cuộn:</b> lăn chuột trên terminal để cuộn trang; giữ <b>Shift</b> để cuộn bên trong terminal.</li>
+            <li><b>Cuộn:</b> lăn chuột trên terminal để cuộn nội dung của nó (ứng dụng toàn màn hình như agy/Claude tự cuộn); khi terminal hết chỗ cuộn thì trang được cuộn. Giữ <b>Alt</b> khi lăn để luôn cuộn trang.</li>
             <li><b>Đổi chỗ / giao quyền:</b> kéo ⋮⋮ để đổi chỗ ô; kéo một worker lên ô Orchestrator để giao quyền.</li>
             <li><b>Terminal không mất khi restart hub</b> nếu máy có tmux. Hãy dùng Telex/VNI ở thanh nhập phía dưới; lệnh <code>/…</code> nên gõ khi bộ gõ ở chế độ tiếng Anh.</li>
           </ul>
@@ -824,15 +822,9 @@
         </div>
 
         <div>
-          <label class="block font-semibold text-slate-300 mb-1">Vai Trò Phụ Trách (Role):</label>
-          <select v-model="editProfileForm.role_tag" class="w-full bg-slate-950 border border-slate-700 rounded px-3 py-1.5 text-slate-200">
-            <option value="Architect / Planner">Architect / Planner (Lên kiến trúc & Plan)</option>
-            <option value="Core Implementer">Core Implementer (Lập trình chính)</option>
-            <option value="Feature Coder">Feature Coder (Lập trình module phụ)</option>
-            <option value="QA / Tester">QA / Tester (Chạy test suite, bench)</option>
-            <option value="Reviewer & Docs">Reviewer & Docs (Review diff, viết docs)</option>
-            <option value="Batch / Standby">Batch / Standby (dự phòng)</option>
-          </select>
+          <label class="block font-semibold text-slate-300 mb-1">Ghi chú vai trò (tuỳ chọn):</label>
+          <input v-model="editProfileForm.role_tag" type="text" maxlength="60" placeholder="vd: viết test, review code" class="w-full bg-slate-950 border border-slate-700 rounded px-3 py-1.5 text-slate-200 focus:outline-none focus:border-indigo-500">
+          <p class="mt-1 text-[10px] text-slate-500">Chỉ là nhãn để bạn và Orchestrator dễ phân việc; không đổi cách agy chạy (chế độ chạy đặt khi tạo terminal).</p>
         </div>
       </div>
 
@@ -979,7 +971,6 @@ createApp({
     const orchH = ref(Math.min(1000, Math.max(240, typeof _prefs.orchH === 'number' ? _prefs.orchH : 420)));
     const orchFont = computed(() => Math.round(11 + (orchH.value - 240) / 760 * 4));
     const termFontSize = computed(() => Math.round(10 + (tileW.value - 300) / 800 * 5));
-    const pageWheel = ref(true);
     const maximizedIdx = ref(null);
     const maxRect = ref(null);
     const saveLayoutPrefs = () => {
@@ -1020,7 +1011,6 @@ createApp({
     ];
     const dragPaneIdx = ref(null);
     const dragOverIdx = ref(null);
-    const ROLE_OPTIONS = ['Architect / Planner', 'Core Implementer', 'Feature Coder', 'QA / Tester', 'Reviewer & Docs', 'Batch / Standby'];
     const MAX_PANES = 25; // pane 0 = orchestrator, 1..24 = worker tiles
     const workerTileIdxs = computed(() => panes.value.map((p, i) => (i >= 1 && p.sessionId ? i : -1)).filter(i => i > 0));
     const visiblePaneIdxs = computed(() => [0, ...workerTileIdxs.value]);
@@ -1227,12 +1217,12 @@ createApp({
     const claudeSharesWith = computed(() => profiles.value.find(p => claudeEmail.value && p.email === claudeEmail.value) || null);
     const accountOptions = computed(() => [
       { id: 'claude', label: `Claude Code · ${claudeEmail.value || 'tài khoản Claude của máy'} (Claude / Anthropic)` },
-      ...profiles.value.map(p => ({ id: p.id, label: `${p.name} · ${p.email} — ${p.role_tag} (${p.id}, agy/Gemini)` }))
+      ...profiles.value.map(p => ({ id: p.id, label: `${p.name} · ${p.email}${p.role_tag ? ' — ' + p.role_tag : ''} (${p.id}, agy/Gemini)` }))
     ]);
     const onModalAccountChange = () => {
       const ns = newSession.value;
       if (ns.profile_id === 'claude') { ns.mode = 'interactive'; ns.command = 'claude'; }
-      else if (ns.command === 'claude') { setSessionMode('plan'); }
+      else if (ns.command === 'claude') { setSessionMode('interactive'); }
     };
 
     const orchestratorIdentity = computed(() => {
@@ -1284,9 +1274,9 @@ createApp({
     const newSession = ref({
       name: '',
       profile_id: 'acc1',
-      mode: 'plan',
+      mode: 'interactive',
       cwd: homeDir.value,
-      command: 'agy --mode plan',
+      command: 'agy',
       task_id: null
     });
 
@@ -1480,11 +1470,31 @@ createApp({
           term.textarea.addEventListener('compositionend', () => noteIme(false));
         }
 
-        // Wheel over a terminal scrolls the page (to reach other tiles) unless Shift is held.
+        // Scroll chaining: the wheel scrolls what is under the pointer first.
+        //  - full-screen apps (agy, Claude Code, less, vim: "alternate" buffer) scroll themselves;
+        //  - a normal shell scrolls its own history while there is some left in that direction;
+        //  - only when the terminal has nothing more to scroll does the wheel move the page.
+        // Alt+wheel always moves the page, so every tile stays reachable.
         container.addEventListener('wheel', (e) => {
-          if (!pageWheel.value || e.shiftKey || maximizedIdx.value !== null) return;
+          if (maximizedIdx.value !== null) return;
           const sc = document.getElementById('studio-scroll');
-          if (!sc || sc.scrollHeight <= sc.clientHeight) return;
+          if (!sc || sc.scrollHeight <= sc.clientHeight) return;     // nothing for the page to do
+          let terminalScrolls = false;
+          if (!e.altKey) {
+            const b = term.buffer.active;
+            const sess = getPaneSession(panes.value[idx]?.sessionId);
+            if (b.type === 'alternate') terminalScrolls = true;
+            else if (sess?.alt_screen) {
+              // Full-screen program under tmux (tmux hides the alternate screen from xterm.js).
+              if (sess.app_mouse) return;                            // it wants mouse events: xterm.js -> tmux -> program
+              e.preventDefault();                                    // otherwise do what terminals do: wheel = arrow keys
+              e.stopPropagation();
+              sendKeys(idx, (e.deltaY < 0 ? '\x1b[A' : '\x1b[B').repeat(3));
+              return;
+            }
+            else terminalScrolls = e.deltaY < 0 ? b.viewportY > 0 : b.viewportY < b.baseY;
+          }
+          if (terminalScrolls) return;                               // let xterm.js handle it
           e.preventDefault();
           e.stopPropagation();
           sc.scrollTop += e.deltaY * (e.deltaMode === 1 ? 16 : (e.deltaMode === 2 ? sc.clientHeight : 1));
@@ -1570,9 +1580,9 @@ createApp({
       newSession.value = {
         name: `Agent-${sessions.value.length + 1}`,
         profile_id: (profiles.value.find(p => !runningCount(p.id)) || profiles.value[0] || {}).id || 'acc1',
-        mode: 'plan',
+        mode: 'interactive',
         cwd: recentWorkspaces.value[0] || homeDir.value,
-        command: 'agy --mode plan',
+        command: 'agy',
         task_id: null
       };
       showLaunchModal.value = true;
@@ -1700,7 +1710,7 @@ createApp({
     const stateText = (st) => (STATE_META[st || 'idle'] || STATE_META.idle)[0];
     const stateClass = (st) => (STATE_META[st || 'idle'] || STATE_META.idle)[1];
     const workerById = (id) => orchestratorWorkers.value.find(w => w.profile_id === id);
-    const workerLabel = (w) => `${w.name} · ${w.role_tag} · ${w.email} (${w.profile_id})`;
+    const workerLabel = (w) => `${w.name}${w.role_tag ? ' · ' + w.role_tag : ''} · ${w.email} (${w.profile_id})`;
     const workerNameOf = (id) => workerById(id)?.name || id;
     const duplicateEmailWorkers = computed(() => orchestratorWorkers.value.filter(w => w.duplicate_email));
     const ccAssignableWorkers = computed(() => orchestratorWorkers.value.filter(w => !w.is_orchestrator));
@@ -1730,14 +1740,22 @@ createApp({
       if (pid === 'claude') return claude.value.state;
       return workerById(pid)?.state || 'idle';
     };
-    const paneRole = (idx) => workerById(paneProfileId(idx))?.role_tag || '';
-    const roleOptionsFor = (idx) => { const cur = paneRole(idx); return cur && !ROLE_OPTIONS.includes(cur) ? [cur, ...ROLE_OPTIONS] : ROLE_OPTIONS; };
-    const setPaneRole = async (idx, role) => {
-      const pid = paneProfileId(idx);
-      if (!pid) return;
-      await fetch(`/api/profiles/${pid}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ role_tag: role }) });
-      await Promise.all([fetchProfiles(), fetchOrchestratorWorkers()]);
+    // How the agent in a pane was launched (agy --mode ...). Plan mode is read-only.
+    const paneMode = (idx) => getPaneSession(panes.value[idx]?.sessionId)?.mode || '';
+    const MODE_STYLE = {
+      'plan': 'text-amber-300 border-amber-600/60 bg-amber-950/60',
+      'accept-edits': 'text-emerald-300 border-emerald-700/60 bg-emerald-950/60',
+      'auto': 'text-sky-300 border-sky-700/60 bg-sky-950/60',
+      'interactive': 'text-slate-300 border-slate-600 bg-slate-800'
     };
+    const MODE_HELP = {
+      'plan': 'plan: chỉ đọc và lập kế hoạch, KHÔNG tự sửa file. Đừng giao việc cần sửa code cho terminal này.',
+      'accept-edits': 'accept-edits: tự động sửa và lưu file.',
+      'auto': 'auto: agy tự quyết định (xem agy --help).',
+      'interactive': 'interactive: agy chạy thường, hỏi duyệt từng bước.'
+    };
+    const modeClass = (m) => MODE_STYLE[m] || MODE_STYLE.interactive;
+    const modeHint = (m) => 'Chế độ khi khởi chạy — ' + (MODE_HELP[m] || m);
 
     const onPaneDragStart = (idx, e) => {
       dragPaneIdx.value = idx;
@@ -2112,9 +2130,9 @@ createApp({
       termFontSize, maximizedIdx, paneGridStyle, toggleMaximize, onSizeInput,
       accountOptions, claudeEmail, claudeSharesWith, onModalAccountChange,
       onPaneSelect, orchestratorIdentity, claudeLogin, newTerminalFromPane, loginFromPane,
-      lastKeys, imeWarn, tileW, tileH, orchH, orchFont, pageWheel, saveLayoutPrefs, visiblePaneIdxs, workerTileIdxs, runningCount,
+      lastKeys, imeWarn, tileW, tileH, orchH, orchFont, saveLayoutPrefs, visiblePaneIdxs, workerTileIdxs, runningCount,
       syncEnabled, syncMembers, syncCount, toggleSync, syncSelectAll, syncSelectNone, toggleSyncMember,
-      drawerOpen, drawerTab, drawerTabs, dragPaneIdx, dragOverIdx, paneProfileId, paneState, paneRole, roleOptionsFor, setPaneRole, onPaneDragStart, onPaneDrop,
+      drawerOpen, drawerTab, drawerTabs, dragPaneIdx, dragOverIdx, paneProfileId, paneState, paneMode, modeClass, modeHint, onPaneDragStart, onPaneDrop,
       claude, progressColumns, getTasksByStage, moveTaskStage, deleteTask, openTaskModal,
       claudeSessionId, ccGoal, ccCwd, ccItems, ccLog, isRunningPlan,
       stateText, stateClass, workerById, workerLabel, workerNameOf, duplicateEmailWorkers, ccAssignableWorkers, formatLogTime,
