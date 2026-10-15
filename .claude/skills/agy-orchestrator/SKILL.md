@@ -50,6 +50,18 @@ Save context: ask the worker for a short answer (<= 25 lines) and read only that
 ## agy slash commands (type with `pane send-text`, then `send-keys enter`)
 `/help` (full list, 46 items), `/clear` (new conversation), `/model`, `/effort`, `/config`, `/context` (token use), `/credits` (quota), `/diff`, `/codesearch <q>`, `/add-dir`, `/agents`, `/artifact` (review plan artifacts), `/btw` (side question), `/fork`, `/copy`, `/open`, `/permissions`, `/hooks`, `/mcp`, `/plugin`, `/remote-control`, `/changelog`, `/logout`, `/exit`. Menus like `/help` take focus: close with `esc` before the next prompt. Run `/clear` between unrelated jobs.
 
+## When to delegate
+You plan; workers execute. Always write the plan, scope and definition of done yourself first: workers share no context, so a vague prompt gives a vague result.
+- **Delegate** when the spec is clear and the work is mechanical and long: code from a spec, writing/running tests, bulk edits, reading many files and summarizing, data gathering. Long output costs the worker's quota, not yours.
+- **Keep** design, hard debugging, security-sensitive changes, merging results, final review, and anything under a few lines (a delegation round costs more than doing it).
+- Pick by role (`acc2-impl` code, `acc3-qa` tests, `acc4-review` read-only review); self-contained one-shots go through `agy-ask`.
+
+## Worker-to-worker work
+Do not let workers chat freely: no one supervises it, loops burn two accounts' quota, and failures are hard to trace. In order of preference:
+1. **Handoff file** - worker A writes its result to a file, you then task worker B to read it (cheap, leaves a trail, you see every step). Default.
+2. **Through you** - read A's result, trim it, pass it to B.
+3. **Direct** (`herdr agent prompt` from one worker to another) only for a tight loop such as implement -> run tests -> fix, with a hard cap (e.g. 3 rounds). Not verified that workers can call `herdr` (they have no Herdr skill); test once before relying on it.
+
 ## Roles and modes
 Workers are named `<acc>-<role>` from `~/.agy_profiles/roles.conf` (e.g. `acc2-impl`, `acc3-qa`, `acc4-review`); pick the worker by role, not pane id. After any (re)start run `agy-sync` (names + default mode). Change mode in-session with `agy-mode <name> default|accept-edits|auto|plan` (shift+tab cycle; idle agents only). Check the mode before sending write work: `--mode` at launch is not always applied. Worker answer rules live in `worker-rules/GEMINI.md` (symlinked to each profile as `GEMINI.md`). Workers commit locally only; you review and push.
 
