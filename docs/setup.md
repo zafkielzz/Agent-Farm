@@ -30,7 +30,7 @@ Chỉ gắn skill nào worker thực sự cần: mô tả skill nằm trong ng�
 ## 5. Luật cho worker
 ```bash
 mkdir -p ~/.gemini/worker-rules && cp worker-rules/GEMINI.md ~/.gemini/worker-rules/
-for a in acc2 acc3 acc4; do ln -sfn ~/.gemini/worker-rules/GEMINI.md ~/.agy_profiles/$a/.gemini/GEMINI.md; done
+for a in acc1 acc2 acc3 acc4 acc5 acc6; do ln -sfn ~/.gemini/worker-rules/GEMINI.md ~/.agy_profiles/$a/.gemini/GEMINI.md; done
 ```
 agy nạp `GEMINI.md` làm luật toàn cục (giới hạn 24 KB/file). Sửa một chỗ, áp cho mọi worker; khởi động lại worker để nạp.
 
