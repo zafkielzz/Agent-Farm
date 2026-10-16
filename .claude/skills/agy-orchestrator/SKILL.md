@@ -25,6 +25,7 @@ It runs `agy-as acc2 -p ...` (isolated account) and prints only the final answer
 - **Stall check, not a chatty monitor:** the backgrounded `agy-ask` already notifies on exit. Do not stream every new file (empty out files, `.pyc` each cost a full turn). Check for stalls with a plain `ls -la --time-style=+%m-%d_%H:%M DIR` after ~10 min; `pgrep`/settings reads may get blocked by the safety classifier, `ls` does not.
 - **Verify judgement-heavy output.** Workers (Gemini Flash) are reliable for mechanical work (scripts from a spec, counting, tests) but over-claim on judgement: in one audit ~1/4 of "High" findings were false or inflated (e.g. announced record dates flagged as leakage; 1,305 "hindsight" summaries were really 37). Re-check every High finding yourself or with a second worker before reporting.
 - Small checks (< ~5 min) are faster to do yourself than to delegate.
+- **Language:** write worker prompts in English and ask for the stdout answer in English (Vietnamese costs ~30-50% more tokens, and only you read it; you summarize for the user in their language). Deliverable files meant for people (logs, READMEs, reports) stay in the user's language: say so in the prompt. Quotes from source documents stay verbatim, never translated.
 
 ## Start / stop
 ```bash
