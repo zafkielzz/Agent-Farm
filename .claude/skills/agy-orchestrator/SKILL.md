@@ -17,6 +17,15 @@ agy-ask acc2 "<prompt>" [--mode plan|accept-edits|auto] [--cwd DIR] [--max 3000]
 ```
 It runs `agy-as acc2 -p ...` (isolated account) and prints only the final answer, capped at `--max` chars; default mode `plan` is read-only, use `--mode accept-edits` when the worker must edit files. It blocks until done (30s-3min): run it with `run_in_background`, and several in parallel on different accounts. Use panes (`agy-up`, below) only when the job needs several steps, supervision, approvals, or the user wants to watch.
 
+### agy-ask pitfalls (learned 2026-10-16)
+- **Preflight every account before real work:** `agy-ask accN "Run: echo ok && pwd" --mode accept-edits --cwd DIR --max 200`. Headless mode cannot prompt, so a missing `permissions.allow` (`command(*)` etc.) in `~/.agy_profiles/accN/.gemini/antigravity-cli/settings.json` makes the worker exit at once with `jetski: no output produced ... auto-denied`. Only acc2-acc4 had it at first; acc5/acc6 did not. Do not edit those settings yourself (blocked as self-modification): give the user the command.
+- **`--cwd` must be the directory the worker writes to.** A worker told to write outside its cwd hung ~14 min with no files and no error. Give each worker cwd = its output dir, and say "only write inside DIR".
+- **`--mode auto` is not available on these accounts** (falls back to default with a warning); use `accept-edits`.
+- **Parallel writers:** never let two workers edit the same file (e.g. a shared log). Have each write `_log_fragment_<acc>.md`; you review and merge.
+- **Stall check, not a chatty monitor:** the backgrounded `agy-ask` already notifies on exit. Do not stream every new file (empty out files, `.pyc` each cost a full turn). Check for stalls with a plain `ls -la --time-style=+%m-%d_%H:%M DIR` after ~10 min; `pgrep`/settings reads may get blocked by the safety classifier, `ls` does not.
+- **Verify judgement-heavy output.** Workers (Gemini Flash) are reliable for mechanical work (scripts from a spec, counting, tests) but over-claim on judgement: in one audit ~1/4 of "High" findings were false or inflated (e.g. announced record dates flagged as leakage; 1,305 "hindsight" summaries were really 37). Re-check every High finding yourself or with a second worker before reporting.
+- Small checks (< ~5 min) are faster to do yourself than to delegate.
+
 ## Start / stop
 ```bash
 agy-up acc2 [--cwd DIR] [agy flags]      # opens workspace "acc2", runs `agy-as acc2 ...`, prints the pane id (e.g. w2:p1)
