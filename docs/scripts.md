@@ -40,26 +40,124 @@ exec agy "$@"
 
 ## agy-ask
 
-```bash
-#!/usr/bin/env bash
-# agy-ask <accN> "<prompt>" [--mode plan|accept-edits|auto] [--cwd DIR] [--max N] [agy flags]
-# One-shot worker call through agy-as (isolated account): prints ONLY the final answer, capped at
-# N chars (default 3000). Cheapest way to delegate a self-contained job; no pane, no screen reads.
-set -eu
-export PATH="$HOME/.local/bin:$PATH"
-acc="${1:?usage: agy-ask <accN> \"<prompt>\" [--mode M] [--cwd DIR] [--max N]}"; prompt="${2:?missing prompt}"; shift 2
-mode=plan; max=3000; cwd="$PWD"
-while [ $# -gt 0 ]; do
-  case "$1" in
-    --mode) mode="$2"; shift 2;;
-    --max)  max="$2"; shift 2;;
-    --cwd)  cwd="$2"; shift 2;;
-    *) break;;
-  esac
-done
-cd "$cwd"
-out=$(agy-as "$acc" -p "$prompt" --mode "$mode" --output-format text "$@" 2>&1) || { echo "agy-ask: agy failed:" >&2; printf '%s\n' "$out" | tail -5 >&2; exit 1; }
-if [ "${#out}" -gt "$max" ]; then printf '%s\n[... cut at %s chars]\n' "${out:0:$max}" "$max"; else printf '%s\n' "$out"; fi
+Viết bằng Python (cần `python3`): đọc `stream-json`, dừng ở sự kiện `result`, kill cả nhóm process và xoá file hội thoại của lần gọi; mỗi lần gọi ghi một dòng `start` và một dòng `end` (trạng thái, số giây, token) vào `~/.agy_profiles/agy-ask.log.jsonl`.
+
+```python
+#!/usr/bin/env python3
+"""agy-ask <accN> "<prompt>" [--mode plan|accept-edits|auto|default] [--cwd DIR] [--max N] [--timeout SEC] [agy flags]
+One-shot worker call through agy-as (isolated account): prints ONLY the final answer, capped at N chars
+(default 3000). Cheapest way to delegate a self-contained job; no pane, no screen reads.
+
+agy -p often prints its answer and then never exits, so the call reads --output-format stream-json and stops at
+the "result" event, kills the whole process group, and deletes that call's conversation files (a killed call leaves
+a ~32 MB .db-wal behind). Each call appends a "start" and an "end" line (status, seconds, token usage) to
+~/.agy_profiles/agy-ask.log.jsonl.
+"""
+import glob, json, os, signal, subprocess, sys, threading, time
+
+HOME = os.path.expanduser("~")
+LOG = f"{HOME}/.agy_profiles/agy-ask.log.jsonl"
+USAGE = __doc__.splitlines()[0]
+
+
+def die(msg):
+    print(f"agy-ask: {msg}", file=sys.stderr)
+    sys.exit(1)
+
+
+def parse(argv):
+    if len(argv) < 2:
+        die(f"usage: {USAGE}")
+    a = {"acc": argv[0], "prompt": argv[1], "mode": "plan", "max": 3000, "cwd": os.getcwd(), "timeout": 900, "extra": []}
+    rest = argv[2:]
+    while rest:
+        k = rest.pop(0)
+        if k in ("--mode", "--max", "--cwd", "--timeout"):
+            if not rest:
+                die(f"{k} needs a value")
+            v = rest.pop(0)
+            a[k[2:]] = int(v) if k in ("--max", "--timeout") else v
+        else:
+            a["extra"].append(k)  # passed to agy as is (e.g. --model X, --effort low)
+    return a
+
+
+def log(entry):
+    try:
+        with open(LOG, "a") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+
+
+def main():
+    a = parse(sys.argv[1:])
+    if not os.path.isdir(a["cwd"]):
+        die(f"no such directory {a['cwd']}")
+    cmd = ["agy-as", a["acc"], "-p", a["prompt"], "--output-format", "stream-json"]
+    if a["mode"] != "default":
+        cmd += ["--mode", a["mode"]]
+    cmd += a["extra"]
+    env = dict(os.environ, PATH=f"{HOME}/.local/bin:" + os.environ.get("PATH", ""))
+
+    t0 = time.time()
+    p = subprocess.Popen(cmd, cwd=a["cwd"], env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                         stderr=subprocess.STDOUT, text=True, start_new_session=True)
+    st = {"cid": None, "result": None, "other": []}
+
+    def cleanup(*_):
+        try:
+            os.killpg(p.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        if st["cid"]:
+            conv = f"{HOME}/.agy_profiles/{a['acc']}/.gemini/antigravity-cli/conversations/{st['cid']}.db"
+            for f in glob.glob(conv + "*"):
+                try:
+                    os.remove(f)
+                except OSError:
+                    pass
+
+    def on_signal(sig, _):  # caller gave up (Bash timeout, Ctrl-C): take the worker down with us
+        cleanup()
+        log({"event": "end", "ts": time.time(), "acc": a["acc"], "cid": st["cid"], "status": "KILLED",
+             "sec": round(time.time() - t0)})
+        sys.exit(128 + sig)
+
+    signal.signal(signal.SIGTERM, on_signal)
+    signal.signal(signal.SIGINT, on_signal)
+
+    def reader():
+        for ln in p.stdout:
+            if ln.startswith('{"event":"init"'):
+                st["cid"] = json.loads(ln).get("conversation_id")
+                log({"event": "start", "ts": t0, "acc": a["acc"], "cid": st["cid"], "mode": a["mode"],
+                     "cwd": a["cwd"], "pid": os.getpid(), "prompt": a["prompt"][:200]})
+            elif ln.startswith('{"event":"result"'):
+                st["result"] = json.loads(ln).get("result", {})
+                return
+            elif not ln.startswith('{"event":'):
+                st["other"].append(ln.rstrip())  # errors, quota messages
+
+    th = threading.Thread(target=reader, daemon=True)
+    th.start()
+    th.join(a["timeout"])
+    cleanup()
+
+    r = st["result"]
+    status = (r or {}).get("status") or ("TIMEOUT" if th.is_alive() else "NO_RESULT")
+    log({"event": "end", "ts": time.time(), "acc": a["acc"], "cid": st["cid"], "status": status,
+         "sec": round(time.time() - t0), "turns": (r or {}).get("num_turns"), "usage": (r or {}).get("usage")})
+    if status != "SUCCESS":
+        print(f"agy-ask: agy {status} after {round(time.time() - t0)}s:", file=sys.stderr)
+        print("\n".join(st["other"][-5:]) or (r or {}).get("response", ""), file=sys.stderr)
+        sys.exit(1)
+    out = r.get("response", "").rstrip("\n")
+    print(out if len(out) <= a["max"] else f"{out[:a['max']]}\n[... cut at {a['max']} chars]")
+
+
+if __name__ == "__main__":
+    main()
 ```
 
 ## agy-up

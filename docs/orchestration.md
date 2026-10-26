@@ -5,7 +5,7 @@ Claude (pane `w4:p1`) là supervisor. Các agy là worker, chạy trong cùng wo
 
 Nguồn chính sách orchestrator (token, việc nào giao/giữ, `agy-ask`): `CLAUDE.md`
 và skill `.claude/skills/agy-orchestrator/SKILL.md`. File này chỉ bổ sung phần thực hành đã kiểm chứng; khi mâu thuẫn, skill thắng.
-Việc một lần, tự chứa: dùng `agy-ask accN "<prompt>" [--mode ...] [--max N]` (không mở pane) trước, pane chỉ khi cần nhiều bước/giám sát.
+Việc một lần, tự chứa: dùng `agy-ask accN "<prompt>" [--mode ...] [--max N] [--timeout S]` (không mở pane; token mỗi lần gọi ghi ở `~/.agy_profiles/agy-ask.log.jsonl`) trước, pane chỉ khi cần nhiều bước/giám sát.
 
 ## Cấu trúc đã dựng
 

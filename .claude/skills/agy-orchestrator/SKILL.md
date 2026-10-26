@@ -13,9 +13,15 @@ A bare `agy` uses the machine's real account and can mix tokens. Always start wo
 ## Cheapest path first: `agy-ask`
 For one self-contained job (read/summarize files, search, write a test from a spec) do NOT open a pane:
 ```bash
-agy-ask acc2 "<prompt>" [--mode plan|accept-edits|auto] [--cwd DIR] [--max 3000]
+agy-ask acc2 "<prompt>" [--mode plan|accept-edits|auto|default] [--cwd DIR] [--max 3000] [--timeout 900] [agy flags, e.g. --effort low]
 ```
-It runs `agy-as acc2 -p ...` (isolated account) and prints only the final answer, capped at `--max` chars; default mode `plan` is read-only, use `--mode accept-edits` when the worker must edit files. It blocks until done (30s-3min): run it with `run_in_background`, and several in parallel on different accounts. Use panes (`agy-up`, below) only when the job needs several steps, supervision, approvals, or the user wants to watch.
+It runs `agy-as acc2 -p ... --output-format stream-json` (isolated account) and prints only the final answer, capped at `--max` chars; default mode `plan` is read-only, use `--mode accept-edits` when the worker must edit files. It blocks until done (30s-3min): run it with `run_in_background`, and several in parallel on different accounts. Use panes (`agy-up`, below) only when the job needs several steps, supervision, approvals, or the user wants to watch.
+
+It stops at the `result` event (agy -p often answers and then never exits), kills the process group, deletes that call's conversation `.db*` files, and exits 1 with `TIMEOUT` after `--timeout` seconds. Killing `agy-ask` (Bash timeout, TaskStop) also kills its worker. Every call logs `start`/`end` lines with status, seconds and token `usage` to `~/.agy_profiles/agy-ask.log.jsonl`: read that file to see what a job really cost.
+
+### What drives worker cost (measured 2026-10-26)
+- **Steps, not mode.** Each agent step re-sends the whole context: read-only jobs ran 9-29 steps and 50-180k input tokens; even "reply OK" costs ~7.5k (tool list + rules). Plan vs default mode on the same 3 read-only jobs: 330k vs 349k tokens total, same answer quality, no files changed. The ~3.5x plan-mode cost seen 2026-10-18 was batch labelling with the data in the prompt, where plan mode drafted a plan instead of answering; for that kind of job call `agy-as -p` without a mode (see `13_l2_run_fast.py`).
+- **Cheapest lever:** name exact files, line ranges or paste the snippet in the prompt so the worker does not explore. `--effort low` for trivial lookups (untested on quality).
 
 ### agy-ask pitfalls (learned 2026-10-16)
 - **Preflight every account before real work:** `agy-ask accN "Run: echo ok && pwd" --mode accept-edits --cwd DIR --max 200`. Headless mode cannot prompt, so a missing `permissions.allow` (`command(*)` etc.) in `~/.agy_profiles/accN/.gemini/antigravity-cli/settings.json` makes the worker exit at once with `jetski: no output produced ... auto-denied`. Only acc2-acc4 had it at first; acc5/acc6 did not. Do not edit those settings yourself (blocked as self-modification): give the user the command.
