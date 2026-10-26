@@ -120,7 +120,7 @@ def main():
 
     def on_signal(sig, _):  # caller gave up (Bash timeout, Ctrl-C): take the worker down with us
         cleanup()
-        log({"event": "end", "ts": time.time(), "acc": a["acc"], "cid": st["cid"], "status": "KILLED",
+        log({"event": "end", "ts": time.time(), "acc": a["acc"], "pid": os.getpid(), "cid": st["cid"], "status": "KILLED",
              "sec": round(time.time() - t0)})
         sys.exit(128 + sig)
 
@@ -146,7 +146,7 @@ def main():
 
     r = st["result"]
     status = (r or {}).get("status") or ("TIMEOUT" if th.is_alive() else "NO_RESULT")
-    log({"event": "end", "ts": time.time(), "acc": a["acc"], "cid": st["cid"], "status": status,
+    log({"event": "end", "ts": time.time(), "acc": a["acc"], "pid": os.getpid(), "cid": st["cid"], "status": status,
          "sec": round(time.time() - t0), "turns": (r or {}).get("num_turns"), "usage": (r or {}).get("usage")})
     if status != "SUCCESS":
         print(f"agy-ask: agy {status} after {round(time.time() - t0)}s:", file=sys.stderr)
