@@ -40,7 +40,7 @@ exec agy "$@"
 
 ## agy-ask
 
-Viết bằng Python (cần `python3`): đọc `stream-json`, dừng ở sự kiện `result`, kill cả nhóm process và xoá file hội thoại của lần gọi; mỗi lần gọi ghi một dòng `start` (role, mode, prompt; trước khi agy chạy) và một dòng `end` (trạng thái, số giây, token) vào `~/.agy_profiles/agy-ask.log.jsonl`, cả hai kèm PID của agy-ask. `--role` là nhãn tự do cho việc (qa, review, impl...), Habblaud hiện nó làm tiêu đề của worker khi đang làm.
+Viết bằng Python (cần `python3`): đọc `stream-json`, dừng ở sự kiện `result`, kill cả nhóm process và xoá file hội thoại của lần gọi; mỗi lần gọi ghi một dòng `start` (role, mode, model, effort, PID của Claude đã gọi, prompt; trước khi agy chạy) và một dòng `end` (trạng thái, số giây, token) vào `~/.agy_profiles/agy-ask.log.jsonl`, cả hai kèm PID của agy-ask. `--role` là nhãn tự do cho việc (qa, review, impl...), Habblaud hiện nó làm tiêu đề của worker khi đang làm.
 
 ```python
 #!/usr/bin/env python3
@@ -83,6 +83,28 @@ def parse(argv):
     return a
 
 
+def claude_pid():
+    """PID of the Claude Code process above this call (the orchestrator that asked), or None."""
+    pid = os.getppid()
+    for _ in range(16):
+        try:
+            with open(f"/proc/{pid}/comm") as f:
+                if f.read().strip() == "claude":
+                    return pid
+            with open(f"/proc/{pid}/stat") as f:
+                pid = int(f.read().rsplit(")", 1)[1].split()[1])
+        except (OSError, ValueError, IndexError):
+            return None
+        if pid <= 1:
+            return None
+    return None
+
+
+def flag(extra, name):
+    """Value of an agy flag passed through (e.g. --model X), or ""."""
+    return extra[extra.index(name) + 1] if name in extra[:-1] else ""
+
+
 def log(entry):
     try:
         with open(LOG, "a") as f:
@@ -103,6 +125,7 @@ def main():
 
     t0 = time.time()
     log({"event": "start", "ts": t0, "acc": a["acc"], "pid": os.getpid(), "mode": a["mode"], "role": a["role"],
+         "model": flag(a["extra"], "--model"), "effort": flag(a["extra"], "--effort"), "claude_pid": claude_pid(),
          "cwd": a["cwd"], "prompt": a["prompt"][:200]})
     p = subprocess.Popen(cmd, cwd=a["cwd"], env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                          stderr=subprocess.STDOUT, text=True, start_new_session=True)
