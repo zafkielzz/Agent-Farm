@@ -40,18 +40,19 @@ exec agy "$@"
 
 ## agy-ask
 
-Viết bằng Python (cần `python3`): đọc `stream-json`, dừng ở sự kiện `result`, kill cả nhóm process và xoá file hội thoại của lần gọi; mỗi lần gọi ghi một dòng `start` và một dòng `end` (trạng thái, số giây, token) vào `~/.agy_profiles/agy-ask.log.jsonl`.
+Viết bằng Python (cần `python3`): đọc `stream-json`, dừng ở sự kiện `result`, kill cả nhóm process và xoá file hội thoại của lần gọi; mỗi lần gọi ghi một dòng `start` (role, mode, prompt; trước khi agy chạy) và một dòng `end` (trạng thái, số giây, token) vào `~/.agy_profiles/agy-ask.log.jsonl`, cả hai kèm PID của agy-ask. `--role` là nhãn tự do cho việc (qa, review, impl...), Habblaud hiện nó làm tiêu đề của worker khi đang làm.
 
 ```python
 #!/usr/bin/env python3
-"""agy-ask <accN> "<prompt>" [--mode plan|accept-edits|auto|default] [--cwd DIR] [--max N] [--timeout SEC] [agy flags]
+"""agy-ask <accN> "<prompt>" [--mode plan|accept-edits|auto|default] [--role NAME] [--cwd DIR] [--max N] [--timeout SEC] [agy flags]
 One-shot worker call through agy-as (isolated account): prints ONLY the final answer, capped at N chars
 (default 3000). Cheapest way to delegate a self-contained job; no pane, no screen reads.
 
 agy -p often prints its answer and then never exits, so the call reads --output-format stream-json and stops at
 the "result" event, kills the whole process group, and deletes that call's conversation files (a killed call leaves
-a ~32 MB .db-wal behind). Each call appends a "start" and an "end" line (status, seconds, token usage) to
-~/.agy_profiles/agy-ask.log.jsonl.
+a ~32 MB .db-wal behind). Each call appends a "start" line (role, mode, prompt) before agy starts and an
+"end" line (status, seconds, token usage) to ~/.agy_profiles/agy-ask.log.jsonl, both with the agy-ask PID (the
+parent of the agy process). --role is a free label for the job (e.g. qa, review, impl) that the office shows.
 """
 import glob, json, os, signal, subprocess, sys, threading, time
 
@@ -68,11 +69,11 @@ def die(msg):
 def parse(argv):
     if len(argv) < 2:
         die(f"usage: {USAGE}")
-    a = {"acc": argv[0], "prompt": argv[1], "mode": "plan", "max": 3000, "cwd": os.getcwd(), "timeout": 900, "extra": []}
+    a = {"acc": argv[0], "prompt": argv[1], "mode": "plan", "role": "", "max": 3000, "cwd": os.getcwd(), "timeout": 900, "extra": []}
     rest = argv[2:]
     while rest:
         k = rest.pop(0)
-        if k in ("--mode", "--max", "--cwd", "--timeout"):
+        if k in ("--mode", "--role", "--max", "--cwd", "--timeout"):
             if not rest:
                 die(f"{k} needs a value")
             v = rest.pop(0)
@@ -101,6 +102,8 @@ def main():
     env = dict(os.environ, PATH=f"{HOME}/.local/bin:" + os.environ.get("PATH", ""))
 
     t0 = time.time()
+    log({"event": "start", "ts": t0, "acc": a["acc"], "pid": os.getpid(), "mode": a["mode"], "role": a["role"],
+         "cwd": a["cwd"], "prompt": a["prompt"][:200]})
     p = subprocess.Popen(cmd, cwd=a["cwd"], env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                          stderr=subprocess.STDOUT, text=True, start_new_session=True)
     st = {"cid": None, "result": None, "other": []}
@@ -131,8 +134,6 @@ def main():
         for ln in p.stdout:
             if ln.startswith('{"event":"init"'):
                 st["cid"] = json.loads(ln).get("conversation_id")
-                log({"event": "start", "ts": t0, "acc": a["acc"], "cid": st["cid"], "mode": a["mode"],
-                     "cwd": a["cwd"], "pid": os.getpid(), "prompt": a["prompt"][:200]})
             elif ln.startswith('{"event":"result"'):
                 st["result"] = json.loads(ln).get("result", {})
                 return

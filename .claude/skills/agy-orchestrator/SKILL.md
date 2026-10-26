@@ -13,11 +13,11 @@ A bare `agy` uses the machine's real account and can mix tokens. Always start wo
 ## Cheapest path first: `agy-ask`
 For one self-contained job (read/summarize files, search, write a test from a spec) do NOT open a pane:
 ```bash
-agy-ask acc2 "<prompt>" [--mode plan|accept-edits|auto|default] [--cwd DIR] [--max 3000] [--timeout 900] [agy flags, e.g. --effort low]
+agy-ask acc2 "<prompt>" [--mode plan|accept-edits|auto|default] [--role qa|review|impl|...] [--cwd DIR] [--max 3000] [--timeout 900] [agy flags, e.g. --effort low]
 ```
 It runs `agy-as acc2 -p ... --output-format stream-json` (isolated account) and prints only the final answer, capped at `--max` chars; default mode `plan` is read-only, use `--mode accept-edits` when the worker must edit files. It blocks until done (30s-3min): run it with `run_in_background`, and several in parallel on different accounts. Use panes (`agy-up`, below) only when the job needs several steps, supervision, approvals, or the user wants to watch.
 
-It stops at the `result` event (agy -p often answers and then never exits), kills the process group, deletes that call's conversation `.db*` files, and exits 1 with `TIMEOUT` after `--timeout` seconds. Killing `agy-ask` (Bash timeout, TaskStop) also kills its worker. Every call logs `start`/`end` lines with status, seconds and token `usage` to `~/.agy_profiles/agy-ask.log.jsonl`: read that file to see what a job really cost.
+It stops at the `result` event (agy -p often answers and then never exits), kills the process group, deletes that call's conversation `.db*` files, and exits 1 with `TIMEOUT` after `--timeout` seconds. Killing `agy-ask` (Bash timeout, TaskStop) also kills its worker. Always pass `--role` (a short label for this job: `impl`, `qa`, `review`, `research`, `data`...): the office (Habblaud) shows it as the worker's title while it works; without it the account's default from `roles.conf` is shown. Every call logs `start`/`end` lines with status, seconds and token `usage` to `~/.agy_profiles/agy-ask.log.jsonl`: read that file to see what a job really cost.
 
 ### What drives worker cost (measured 2026-10-26)
 - **Steps, not mode.** Each agent step re-sends the whole context: read-only jobs ran 9-29 steps and 50-180k input tokens; even "reply OK" costs ~7.5k (tool list + rules). Plan vs default mode on the same 3 read-only jobs: 330k vs 349k tokens total, same answer quality, no files changed. The ~3.5x plan-mode cost seen 2026-10-18 was batch labelling with the data in the prompt, where plan mode drafted a plan instead of answering; for that kind of job call `agy-as -p` without a mode (see `13_l2_run_fast.py`).
