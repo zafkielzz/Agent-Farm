@@ -31,6 +31,9 @@ rejects anything but `gemini-3.8-flash[-low|-medium|-high]`); the account defaul
 | Review, audit, root-cause debugging, anything that needs judgement or a multi-file plan | `plan` | `high` |
 | Batch labelling/transforming with the data inside the prompt | `default` (plan mode drafts a plan instead of answering) | `low`/`medium` |
 
+- The user can set each worker's **defaults** in Habblaud (worker drawer › "Defaults for jobs", saved to
+  `~/.agy_profiles/defaults.json`); agy-ask uses them only when a call has no `--mode`/`--effort`. You still pass
+  both, so your choice wins; the office shows what agy really applied (read from its log).
 - `plan` = read-only (never implementation work); `accept-edits` = may edit files, cwd = the folder it writes to;
   `auto` is not available on these accounts.
 - Effort savings are **not measured yet**: thinking tokens count as output, so lower effort should cost less of the Gemini
