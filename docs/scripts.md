@@ -170,8 +170,11 @@ def main():
 
     r = st["result"]
     status = (r or {}).get("status") or ("TIMEOUT" if th.is_alive() else "NO_RESULT")
-    log({"event": "end", "ts": time.time(), "acc": a["acc"], "pid": os.getpid(), "cid": st["cid"], "status": status,
-         "sec": round(time.time() - t0), "turns": (r or {}).get("num_turns"), "usage": (r or {}).get("usage")})
+    end = {"event": "end", "ts": time.time(), "acc": a["acc"], "pid": os.getpid(), "cid": st["cid"], "status": status,
+           "sec": round(time.time() - t0), "turns": (r or {}).get("num_turns"), "usage": (r or {}).get("usage")}
+    if status != "SUCCESS":  # last error lines (e.g. 429 "Individual quota reached"): Habblaud shows quota hits
+        end["error"] = ("\n".join(st["other"][-5:]) or (r or {}).get("response") or "")[-300:]
+    log(end)
     if status != "SUCCESS":
         print(f"agy-ask: agy {status} after {round(time.time() - t0)}s:", file=sys.stderr)
         print("\n".join(st["other"][-5:]) or (r or {}).get("response", ""), file=sys.stderr)
