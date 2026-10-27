@@ -40,7 +40,7 @@ exec agy "$@"
 
 ## agy-ask
 
-Viết bằng Python (cần `python3`): đọc `stream-json`, dừng ở sự kiện `result`, kill cả nhóm process và xoá file hội thoại của lần gọi; mỗi lần gọi ghi một dòng `start` (role, mode, model, effort, PID của Claude đã gọi, prompt; trước khi agy chạy) và một dòng `end` (trạng thái, số giây, token) vào `~/.agy_profiles/agy-ask.log.jsonl`, cả hai kèm PID của agy-ask. `--role` là nhãn tự do cho việc (qa, review, impl...), Habblaud hiện nó làm tiêu đề của worker khi đang làm. Worker chỉ chạy Gemini 3.8 Flash: `--model` khác bị từ chối, `--effort` chỉ nhận low/medium/high. Không có `--mode`/`--effort` thì dùng mặc định của worker trong `~/.agy_profiles/defaults.json` (chỉnh trong Habblaud).
+Viết bằng Python (cần `python3`): đọc `stream-json`, dừng ở sự kiện `result`, kill cả nhóm process và xoá file hội thoại của lần gọi; mỗi lần gọi ghi một dòng `start` (role, mode, model, effort, PID của Claude đã gọi, prompt; trước khi agy chạy) và một dòng `end` (trạng thái, số giây, token) vào `~/.agy_profiles/agy-ask.log.jsonl`, cả hai kèm PID của agy-ask. `--role` là nhãn tự do cho việc (qa, review, impl...), Habblaud hiện nó làm tiêu đề của worker khi đang làm. Worker chỉ chạy Gemini 3.8 Flash: `--model` khác bị từ chối, `--effort` chỉ nhận low/medium/high. Không có `--mode`/`--effort` thì dùng mặc định của worker trong `~/.agy_profiles/defaults.json` (chỉnh trong Habblaud). Luật đội (`~/.agy_profiles/team.json`, chỉnh trong Habblaud; không có file = không có luật): đã phong boss thì chỉ phiên Claude đó (PID là tổ tiên của lời gọi) được giao việc, và chỉ cho tài khoản đã đăng ký làm worker; từ chối thì exit 2. Việc giao từ văn phòng (Habblaud đặt `AGY_ASK_FROM_OFFICE=1`, gọi tay cũng dùng được) không bị chặn. `agy-ask team` in boss và danh sách worker.
 
 ```python
 #!/usr/bin/env python3
@@ -57,6 +57,11 @@ Workers only run Gemini 3.8 Flash (the account default): --model accepts only ge
 and --effort only the levels Flash has (low, medium, high). Without --mode / --effort the call uses the worker's
 defaults from ~/.agy_profiles/defaults.json ({"acc2": {"mode": "plan", "effort": "low"}}, set from Habblaud), else
 mode plan and the account's default effort.
+
+Team rule (~/.agy_profiles/team.json, edited in Habblaud; no file = no rule): with a boss appointed, only that Claude
+Code session (its PID is an ancestor of this call) may give jobs, and only to the accounts registered as workers.
+Jobs sent from the office (Habblaud sets AGY_ASK_FROM_OFFICE=1, also usable by hand) skip the rule.
+`agy-ask team` prints the boss and the workers.
 """
 import glob, json, os, signal, subprocess, sys, threading, time
 
@@ -65,6 +70,7 @@ EFFORTS = ("low", "medium", "high")  # Gemini 3.8 Flash thinking levels
 MODEL = "gemini-3.8-flash"  # the only model workers use
 LOG = f"{HOME}/.agy_profiles/agy-ask.log.jsonl"
 DEFAULTS = f"{HOME}/.agy_profiles/defaults.json"
+TEAM = f"{HOME}/.agy_profiles/team.json"
 USAGE = __doc__.splitlines()[0]
 
 
@@ -109,6 +115,47 @@ def defaults(acc):
         return {}
 
 
+def team():
+    """The team file ({"boss": {..., "pid", "name"}, "workers": [...]}), or None (no file: no rule)."""
+    try:
+        with open(TEAM) as f:
+            t = json.load(f)
+        return t if isinstance(t, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+def check_team(acc, caller):
+    """Refuses (exit 2) a job the team rule does not allow; jobs from the office are always allowed."""
+    t = team()
+    if t is None or os.environ.get("AGY_ASK_FROM_OFFICE") == "1":
+        return
+    boss = t.get("boss") if isinstance(t.get("boss"), dict) else None
+    workers = t.get("workers")
+    if boss:
+        name = boss.get("name") or boss.get("id") or "?"
+        if not caller or caller != boss.get("pid"):
+            print(f"agy-ask: only the boss {name} may give jobs (appointed in Habblaud); this call is not from it", file=sys.stderr)
+            sys.exit(2)
+        if acc == boss.get("account"):
+            print(f"agy-ask: {acc} is the boss's own account", file=sys.stderr)
+            sys.exit(2)
+    if isinstance(workers, list) and acc not in workers:
+        listed = ", ".join(workers) or "none"
+        print(f"agy-ask: {acc} is not a registered worker (workers: {listed}; add it in Habblaud)", file=sys.stderr)
+        sys.exit(2)
+
+
+def print_team():
+    t = team()
+    if t is None:
+        print("no team file: any caller may give jobs to any account")
+        return
+    boss = t.get("boss") if isinstance(t.get("boss"), dict) else None
+    print(f"boss: {boss.get('name') or boss.get('id')} (pid {boss.get('pid')})" if boss else "boss: none (anyone may give jobs)")
+    print(f"workers: {', '.join(t.get('workers') or []) or 'none'}")
+
+
 def claude_pid():
     """PID of the Claude Code process above this call (the orchestrator that asked), or None."""
     pid = os.getppid()
@@ -140,7 +187,11 @@ def log(entry):
 
 
 def main():
+    if sys.argv[1:] == ["team"]:
+        return print_team()
     a = parse(sys.argv[1:])
+    caller = claude_pid()
+    check_team(a["acc"], caller)
     if not os.path.isdir(a["cwd"]):
         die(f"no such directory {a['cwd']}")
     cmd = ["agy-as", a["acc"], "-p", a["prompt"], "--output-format", "stream-json"]
@@ -151,7 +202,7 @@ def main():
 
     t0 = time.time()
     log({"event": "start", "ts": t0, "acc": a["acc"], "pid": os.getpid(), "mode": a["mode"], "role": a["role"],
-         "model": flag(a["extra"], "--model"), "effort": flag(a["extra"], "--effort"), "claude_pid": claude_pid(),
+         "model": flag(a["extra"], "--model"), "effort": flag(a["extra"], "--effort"), "claude_pid": caller,
          "cwd": a["cwd"], "prompt": a["prompt"][:200]})
     p = subprocess.Popen(cmd, cwd=a["cwd"], env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                          stderr=subprocess.STDOUT, text=True, start_new_session=True)

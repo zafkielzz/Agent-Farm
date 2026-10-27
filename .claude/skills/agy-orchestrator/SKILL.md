@@ -19,6 +19,14 @@ It runs `agy-as acc2 -p ... --output-format stream-json` (isolated account) and 
 
 It stops at the `result` event (agy -p often answers and then never exits), kills the process group, deletes that call's conversation `.db*` files, and exits 1 with `TIMEOUT` after `--timeout` seconds. Killing `agy-ask` (Bash timeout, TaskStop) also kills its worker. Always pass `--role` (a short label for this job: `impl`, `qa`, `review`, `research`, `data`...): the office (Habblaud) shows it as the worker's title while it works; without it the account's default from `roles.conf` is shown. Every call logs `start`/`end` lines with status, seconds and token `usage` to `~/.agy_profiles/agy-ask.log.jsonl`: read that file to see what a job really cost.
 
+### Team rule: only the boss gives jobs, only to workers
+The user picks the team in Habblaud (`~/.agy_profiles/team.json`). Run `agy-ask team` before delegating: it prints the
+boss and the registered workers. When a boss is appointed, `agy-ask` refuses (exit 2) any call that is not from the
+boss session ("only the boss X may give jobs") and any account that is not a registered worker ("accN is not a
+registered worker"). If you are not the boss, do not delegate: do the work yourself or tell the user. Never call an
+account outside the worker list, and never get around the rule (do not set `AGY_ASK_FROM_OFFICE`: it is for jobs the
+user sends from the office). No team file = no rule.
+
 ### Choosing mode and effort (you decide, every call)
 The user does not pick these by hand: you choose them per job and always pass `--role`, `--mode` and `--effort` explicitly
 (the office shows them; the log records them). Workers run **Gemini 3.8 Flash only**: never pass `--model` (agy-ask
