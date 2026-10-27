@@ -1,6 +1,6 @@
 # Mã nguồn các script
 
-Chép từng đoạn vào `~/.local/bin/<tên>` rồi `chmod +x`. Thứ tự dùng: `agy-as` (chạy agy trong profile cô lập) → `agy-mode` / `agy-sync` (mode, tên, role) → `agy-ask` / `agy-up` (giao việc).
+Chép từng đoạn vào `~/.local/bin/<tên>` rồi `chmod +x`. Thứ tự dùng: `agy-as` (chạy agy trong profile cô lập) → `agy-mode` / `agy-sync` (mode, tên, role) → `agy-ask` / `claude-ask` / `agy-up` (giao việc). `agy-ask`/`claude-ask` là file thật trong `bin/`, không chép từ đây.
 
 ## agy-as
 
@@ -38,231 +38,34 @@ fi
 exec agy "$@"
 ```
 
-## agy-ask
+## agy-ask và claude-ask
 
-Viết bằng Python (cần `python3`): đọc `stream-json`, dừng ở sự kiện `result`, kill cả nhóm process và xoá file hội thoại của lần gọi; mỗi lần gọi ghi một dòng `start` (role, mode, model, effort, PID của Claude đã gọi, prompt; trước khi agy chạy) và một dòng `end` (trạng thái, số giây, token) vào `~/.agy_profiles/agy-ask.log.jsonl`, cả hai kèm PID của agy-ask. `--role` là nhãn tự do cho việc (qa, review, impl...), Habblaud hiện nó làm tiêu đề của worker khi đang làm. Worker chỉ chạy Gemini 3.8 Flash: `--model` khác bị từ chối, `--effort` chỉ nhận low/medium/high. Không có `--mode`/`--effort` thì dùng mặc định của worker trong `~/.agy_profiles/defaults.json` (chỉnh trong Habblaud). Luật đội (`~/.agy_profiles/team.json`, chỉnh trong Habblaud; không có file = không có luật): đã phong boss thì chỉ phiên Claude đó (PID là tổ tiên của lời gọi) được giao việc, và chỉ cho tài khoản đã đăng ký làm worker; từ chối thì exit 2. Việc giao từ văn phòng (Habblaud đặt `AGY_ASK_FROM_OFFICE=1`, gọi tay cũng dùng được) không bị chặn. `agy-ask team` in boss và danh sách worker.
+Một nguồn Python cho hai lệnh: [`bin/worker-ask`](../bin/worker-ask) (cần `python3`). Cài:
 
-```python
-#!/usr/bin/env python3
-"""agy-ask <accN> "<prompt>" [--mode plan|accept-edits|auto|default] [--effort low|medium|high] [--role NAME] [--cwd DIR] [--max N] [--timeout SEC] [agy flags]
-One-shot worker call through agy-as (isolated account): prints ONLY the final answer, capped at N chars
-(default 3000). Cheapest way to delegate a self-contained job; no pane, no screen reads.
-
-agy -p often prints its answer and then never exits, so the call reads --output-format stream-json and stops at
-the "result" event, kills the whole process group, and deletes that call's conversation files (a killed call leaves
-a ~32 MB .db-wal behind). Each call appends a "start" line (role, mode, prompt) before agy starts and an
-"end" line (status, seconds, token usage) to ~/.agy_profiles/agy-ask.log.jsonl, both with the agy-ask PID (the
-parent of the agy process). --role is a free label for the job (e.g. qa, review, impl) that the office shows.
-Workers only run Gemini 3.8 Flash (the account default): --model accepts only gemini-3.8-flash[-low|-medium|-high],
-and --effort only the levels Flash has (low, medium, high). Without --mode / --effort the call uses the worker's
-defaults from ~/.agy_profiles/defaults.json ({"acc2": {"mode": "plan", "effort": "low"}}, set from Habblaud), else
-mode plan and the account's default effort.
-
-Team rule (~/.agy_profiles/team.json, edited in Habblaud; no file = no rule): with a boss appointed, only that Claude
-Code session (its PID is an ancestor of this call) may give jobs, and only to the accounts registered as workers.
-Jobs sent from the office (Habblaud sets AGY_ASK_FROM_OFFICE=1, also usable by hand) skip the rule.
-`agy-ask team` prints the boss and the workers.
-"""
-import glob, json, os, signal, subprocess, sys, threading, time
-
-HOME = os.path.expanduser("~")
-EFFORTS = ("low", "medium", "high")  # Gemini 3.8 Flash thinking levels
-MODEL = "gemini-3.8-flash"  # the only model workers use
-LOG = f"{HOME}/.agy_profiles/agy-ask.log.jsonl"
-DEFAULTS = f"{HOME}/.agy_profiles/defaults.json"
-TEAM = f"{HOME}/.agy_profiles/team.json"
-USAGE = __doc__.splitlines()[0]
-
-
-def die(msg):
-    print(f"agy-ask: {msg}", file=sys.stderr)
-    sys.exit(1)
-
-
-def parse(argv):
-    if len(argv) < 2:
-        die(f"usage: {USAGE}")
-    a = {"acc": argv[0], "prompt": argv[1], "mode": "", "role": "", "max": 3000, "cwd": os.getcwd(), "timeout": 900, "extra": []}
-    rest = argv[2:]
-    while rest:
-        k = rest.pop(0)
-        if k in ("--mode", "--role", "--max", "--cwd", "--timeout"):
-            if not rest:
-                die(f"{k} needs a value")
-            v = rest.pop(0)
-            a[k[2:]] = int(v) if k in ("--max", "--timeout") else v
-        else:
-            a["extra"].append(k)  # passed to agy as is (e.g. --effort low)
-    effort, model = flag(a["extra"], "--effort"), flag(a["extra"], "--model")
-    if "--effort" in a["extra"] and effort not in EFFORTS:
-        die(f"--effort must be one of {', '.join(EFFORTS)}")
-    if "--model" in a["extra"] and model not in [MODEL] + [f"{MODEL}-{e}" for e in EFFORTS]:
-        die(f"workers only use {MODEL} (got --model {model!r}); choose the thinking level with --effort")
-    d = defaults(a["acc"])
-    a["mode"] = a["mode"] or d.get("mode") or "plan"
-    if "--effort" not in a["extra"] and d.get("effort") in EFFORTS:
-        a["extra"] += ["--effort", d["effort"]]
-    return a
-
-
-def defaults(acc):
-    """The worker's defaults for calls that do not say (defaults.json), or {}."""
-    try:
-        with open(DEFAULTS) as f:
-            d = json.load(f).get(acc)
-        return d if isinstance(d, dict) else {}
-    except (OSError, ValueError, AttributeError):
-        return {}
-
-
-def team():
-    """The team file ({"boss": {..., "pid", "name"}, "workers": [...]}), or None (no file: no rule)."""
-    try:
-        with open(TEAM) as f:
-            t = json.load(f)
-        return t if isinstance(t, dict) else None
-    except (OSError, ValueError):
-        return None
-
-
-def check_team(acc, caller):
-    """Refuses (exit 2) a job the team rule does not allow; jobs from the office are always allowed."""
-    t = team()
-    if t is None or os.environ.get("AGY_ASK_FROM_OFFICE") == "1":
-        return
-    boss = t.get("boss") if isinstance(t.get("boss"), dict) else None
-    workers = t.get("workers")
-    if boss:
-        name = boss.get("name") or boss.get("id") or "?"
-        if not caller or caller != boss.get("pid"):
-            print(f"agy-ask: only the boss {name} may give jobs (appointed in Habblaud); this call is not from it", file=sys.stderr)
-            sys.exit(2)
-        if acc == boss.get("account"):
-            print(f"agy-ask: {acc} is the boss's own account", file=sys.stderr)
-            sys.exit(2)
-    if isinstance(workers, list) and acc not in workers:
-        listed = ", ".join(workers) or "none"
-        print(f"agy-ask: {acc} is not a registered worker (workers: {listed}; add it in Habblaud)", file=sys.stderr)
-        sys.exit(2)
-
-
-def print_team():
-    t = team()
-    if t is None:
-        print("no team file: any caller may give jobs to any account")
-        return
-    boss = t.get("boss") if isinstance(t.get("boss"), dict) else None
-    print(f"boss: {boss.get('name') or boss.get('id')} (pid {boss.get('pid')})" if boss else "boss: none (anyone may give jobs)")
-    print(f"workers: {', '.join(t.get('workers') or []) or 'none'}")
-
-
-def claude_pid():
-    """PID of the Claude Code process above this call (the orchestrator that asked), or None."""
-    pid = os.getppid()
-    for _ in range(16):
-        try:
-            with open(f"/proc/{pid}/comm") as f:
-                if f.read().strip() == "claude":
-                    return pid
-            with open(f"/proc/{pid}/stat") as f:
-                pid = int(f.read().rsplit(")", 1)[1].split()[1])
-        except (OSError, ValueError, IndexError):
-            return None
-        if pid <= 1:
-            return None
-    return None
-
-
-def flag(extra, name):
-    """Value of an agy flag passed through (e.g. --model X), or ""."""
-    return extra[extra.index(name) + 1] if name in extra[:-1] else ""
-
-
-def log(entry):
-    try:
-        with open(LOG, "a") as f:
-            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-    except OSError:
-        pass
-
-
-def main():
-    if sys.argv[1:] == ["team"]:
-        return print_team()
-    a = parse(sys.argv[1:])
-    caller = claude_pid()
-    check_team(a["acc"], caller)
-    if not os.path.isdir(a["cwd"]):
-        die(f"no such directory {a['cwd']}")
-    cmd = ["agy-as", a["acc"], "-p", a["prompt"], "--output-format", "stream-json"]
-    if a["mode"] != "default":
-        cmd += ["--mode", a["mode"]]
-    cmd += a["extra"]
-    env = dict(os.environ, PATH=f"{HOME}/.local/bin:" + os.environ.get("PATH", ""))
-
-    t0 = time.time()
-    log({"event": "start", "ts": t0, "acc": a["acc"], "pid": os.getpid(), "mode": a["mode"], "role": a["role"],
-         "model": flag(a["extra"], "--model"), "effort": flag(a["extra"], "--effort"), "claude_pid": caller,
-         "cwd": a["cwd"], "prompt": a["prompt"][:200]})
-    p = subprocess.Popen(cmd, cwd=a["cwd"], env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                         stderr=subprocess.STDOUT, text=True, start_new_session=True)
-    st = {"cid": None, "result": None, "other": []}
-
-    def cleanup(*_):
-        try:
-            os.killpg(p.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        if st["cid"]:
-            conv = f"{HOME}/.agy_profiles/{a['acc']}/.gemini/antigravity-cli/conversations/{st['cid']}.db"
-            for f in glob.glob(conv + "*"):
-                try:
-                    os.remove(f)
-                except OSError:
-                    pass
-
-    def on_signal(sig, _):  # caller gave up (Bash timeout, Ctrl-C): take the worker down with us
-        cleanup()
-        log({"event": "end", "ts": time.time(), "acc": a["acc"], "pid": os.getpid(), "cid": st["cid"], "status": "KILLED",
-             "sec": round(time.time() - t0)})
-        sys.exit(128 + sig)
-
-    signal.signal(signal.SIGTERM, on_signal)
-    signal.signal(signal.SIGINT, on_signal)
-
-    def reader():
-        for ln in p.stdout:
-            if ln.startswith('{"event":"init"'):
-                st["cid"] = json.loads(ln).get("conversation_id")
-            elif ln.startswith('{"event":"result"'):
-                st["result"] = json.loads(ln).get("result", {})
-                return
-            elif not ln.startswith('{"event":'):
-                st["other"].append(ln.rstrip())  # errors, quota messages
-
-    th = threading.Thread(target=reader, daemon=True)
-    th.start()
-    th.join(a["timeout"])
-    cleanup()
-
-    r = st["result"]
-    status = (r or {}).get("status") or ("TIMEOUT" if th.is_alive() else "NO_RESULT")
-    end = {"event": "end", "ts": time.time(), "acc": a["acc"], "pid": os.getpid(), "cid": st["cid"], "status": status,
-           "sec": round(time.time() - t0), "turns": (r or {}).get("num_turns"), "usage": (r or {}).get("usage")}
-    if status != "SUCCESS":  # last error lines (e.g. 429 "Individual quota reached"): Habblaud shows quota hits
-        end["error"] = ("\n".join(st["other"][-5:]) or (r or {}).get("response") or "")[-300:]
-    log(end)
-    if status != "SUCCESS":
-        print(f"agy-ask: agy {status} after {round(time.time() - t0)}s:", file=sys.stderr)
-        print("\n".join(st["other"][-5:]) or (r or {}).get("response", ""), file=sys.stderr)
-        sys.exit(1)
-    out = r.get("response", "").rstrip("\n")
-    print(out if len(out) <= a["max"] else f"{out[:a['max']]}\n[... cut at {a['max']} chars]")
-
-
-if __name__ == "__main__":
-    main()
+```bash
+install -m 755 bin/worker-ask ~/.local/bin/agy-ask && ln -sf agy-ask ~/.local/bin/claude-ask
 ```
+
+- `agy-ask accN "<prompt>"` giao việc cho worker Antigravity, `claude-ask <tài khoản> "<prompt>"` cho worker Claude Code
+  (`.claude-work`, `claude:.claude-work` hoặc `work`; id worker = `claude:.claude-work`). In ra **chỉ câu trả lời cuối**
+  (`--max`, mặc định 2000 ký tự). Tùy chọn: `--mode plan|accept-edits|auto|default`, `--effort` (agy: low/medium/high;
+  Claude: low…max), `--model` (agy chỉ Gemini 3.8 Flash), `--role`, `--cwd`, `--timeout`.
+- **Qua văn phòng** (Habblaud ở `$HABBLAUD_URL`, mặc định `http://127.0.0.1:4747`): `POST /api/workers/ask` đưa việc vào
+  terminal thường trực của worker (mỗi việc một hội thoại mới), rồi chờ `GET /api/workers/jobs/<id>?wait=60` (người
+  gọi không tốn token khi chờ). SIGTERM/Ctrl-C khi đang chờ → `POST /api/workers/cancel {job}`; hết `--timeout` cũng hủy.
+- **Chạy ngầm** khi văn phòng không chạy hoặc trả 404/503 (bản Habblaud cũ): agy `-p --output-format stream-json` (dừng ở
+  sự kiện `result`, kill cả nhóm process, xóa file hội thoại) hoặc `claude -p --output-format json
+  --no-session-persistence` (bỏ biến môi trường của phiên Claude đang gọi). Mỗi lần ghi dòng `start`/`end` (`via:
+  "headless"`, `worker`, `acc` = id worker) vào `~/.agy_profiles/agy-ask.log.jsonl`; việc qua văn phòng thì server ghi.
+- **Luật đội** (`~/.agy_profiles/team.json`, chỉnh trong Habblaud; không có file = không có luật): đã phong boss thì chỉ
+  boss giao được (boss Claude: PID là tổ tiên của lời gọi; boss agy: có tổ tiên `agy` với
+  `HOME=~/.agy_profiles/<acc của boss>`), không giao cho chính tài khoản của boss, và chỉ cho worker đã đăng ký. Việc giao
+  từ văn phòng (`AGY_ASK_FROM_OFFICE=1`, gọi tay cũng dùng được) không bị chặn. `agy-ask team` in boss và worker.
+- **Mã thoát:** 0 xong; 1 lỗi/hết giờ; 2 luật đội chặn; 3 BUSY/PAUSED (người dùng đang cầm lái worker đó, hoặc nó đang
+  làm việc khác: `agy-ask --wait-release <worker>` rồi gọi lại, hoặc chọn worker khác); 4 việc bị hủy từ văn phòng.
+- `agy-ask --wait-release <worker> [--timeout S]`: chờ tới khi người dùng trả lái (không có văn phòng thì về ngay).
+- Không có `--mode`/`--effort` thì dùng mặc định của worker trong `~/.agy_profiles/defaults.json` (chỉnh trong
+  Habblaud), không có nữa thì agy `plan`, Claude `default`.
 
 ## agy-up
 

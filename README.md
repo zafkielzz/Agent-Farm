@@ -22,7 +22,7 @@ acc2-impl      acc3-qa        acc4-review     ...   mỗi worker = 1 profile ~/.
 |---|---|
 | [docs/setup.md](docs/setup.md) | Cài đặt từ đầu: profile, đăng nhập, skill dùng chung, git, luật worker |
 | [docs/orchestration.md](docs/orchestration.md) | Lệnh Herdr, role, đổi mode, mẫu giao việc, điều đã/chưa kiểm chứng |
-| [docs/scripts.md](docs/scripts.md) | Mã nguồn `agy-as`, `agy-ask`, `agy-up`, `agy-mode`, `agy-sync`, `roles.conf` |
+| [docs/scripts.md](docs/scripts.md) | Mã nguồn `agy-as`, `agy-up`, `agy-mode`, `agy-sync`, `roles.conf`; cách dùng `agy-ask`/`claude-ask` (nguồn: `bin/worker-ask`) |
 | [.claude/skills/agy-orchestrator/SKILL.md](.claude/skills/agy-orchestrator/SKILL.md) | Skill cho Claude Code khi điều phối |
 | [worker-rules/GEMINI.md](worker-rules/GEMINI.md) | Luật tiết kiệm token cho worker agy |
 | [CLAUDE.md](CLAUDE.md) | Chỉ dẫn vai trò orchestrator cho Claude Code |

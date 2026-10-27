@@ -3,7 +3,7 @@
 Giả định: đã cài `herdr` và `agy` trong `~/.local/bin`. Chạy Claude Code **bên trong một pane Herdr** (`HERDR_ENV=1`), nếu không nó không được phép điều khiển Herdr.
 
 ## 1. Script
-Chép các script trong [scripts.md](scripts.md) vào `~/.local/bin/` rồi `chmod +x`.
+Chép các script trong [scripts.md](scripts.md) vào `~/.local/bin/` rồi `chmod +x`; `agy-ask`/`claude-ask`: `install -m 755 bin/worker-ask ~/.local/bin/agy-ask && ln -sf agy-ask ~/.local/bin/claude-ask`.
 
 ## 2. Profile cô lập (mỗi tài khoản một thư mục)
 ```bash

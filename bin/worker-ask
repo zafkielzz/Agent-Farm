@@ -1,0 +1,527 @@
+#!/usr/bin/env python3
+"""agy-ask <accN> "<prompt>" [--mode plan|accept-edits|auto|default] [--effort low|medium|high] [--role NAME] [--cwd DIR] [--max N] [--timeout SEC] [agy flags]
+claude-ask <account> "<prompt>" [--mode default|plan|accept-edits|auto] [--effort low|medium|high|xhigh|max] [--model M] [--role NAME] [--cwd DIR] [--max N] [--timeout SEC]
+agy-ask --wait-release <worker> [--timeout SEC]    wait until you hand the worker back (you took its wheel)
+agy-ask team                                       print the boss and the workers
+
+Gives one job to a worker and prints ONLY its final answer (capped at --max chars, default 2000). One source, two
+commands: installed as agy-ask (Antigravity workers, "acc2") and as the symlink claude-ask (Claude Code workers: the
+account id ".claude-work", "claude:.claude-work" or just "work"). The worker id is "acc2" / "claude:.claude-work".
+
+Through the office (Habblaud at $HABBLAUD_URL, default http://127.0.0.1:4747): the job goes into the worker's own
+terminal (POST /api/workers/ask) as a fresh conversation, and this call waits on GET /api/workers/jobs/<id>?wait=60,
+spending nothing while it waits; the server sends back the final answer only. If the office is not running or has no
+worker terminals (no answer, 404, 503), the job runs headless as before: agy -p (stream-json; stops at the result
+event, kills the process group, deletes that call's conversation files) or claude -p --output-format json (no session
+saved). Headless calls log "start"/"end" lines to ~/.agy_profiles/agy-ask.log.jsonl (via "headless"); the office logs
+the jobs it runs.
+
+Team rule (~/.agy_profiles/team.json, edited in Habblaud; no file = no rule): with a boss appointed, only the boss may
+give jobs (a Claude boss: its PID is an ancestor of this call; an Antigravity boss: an ancestor `agy` runs with
+HOME=~/.agy_profiles/<boss acc>), never to the boss's own account, and only to registered workers. Jobs sent from the
+office (AGY_ASK_FROM_OFFICE=1, also usable by hand) skip the rule.
+
+Exit codes: 0 done; 1 failed, timeout or other error; 2 refused by the team rule; 3 BUSY or PAUSED: you are driving
+that worker (run `agy-ask --wait-release <worker>`, then ask again) or it is on another job (or pick another worker);
+4 the job was cancelled (from the office).
+
+Antigravity workers only run Gemini 3.8 Flash: --model accepts only gemini-3.8-flash[-low|-medium|-high], --effort only
+low, medium, high. Without --mode / --effort a call uses the worker's defaults in ~/.agy_profiles/defaults.json
+({"acc2": {"mode": "plan", "effort": "low"}}, set from Habblaud), else mode plan (agy) or default (Claude).
+"""
+import glob, json, os, signal, subprocess, sys, threading, time, urllib.error, urllib.parse, urllib.request
+
+HOME = os.path.expanduser("~")
+ROOT = os.environ.get("HABBLAUD_AGY_PROFILES") or f"{HOME}/.agy_profiles"
+LOG = f"{ROOT}/agy-ask.log.jsonl"
+DEFAULTS = f"{ROOT}/defaults.json"
+TEAM = f"{ROOT}/team.json"
+URL = (os.environ.get("HABBLAUD_URL") or "http://127.0.0.1:4747").rstrip("/")
+TOOL = "claude" if os.path.basename(sys.argv[0]).startswith("claude") else "agy"
+CMD = f"{TOOL}-ask"
+USAGE = __doc__.splitlines()[0 if TOOL == "agy" else 1]
+
+OK, FAIL, REFUSED, BUSY, CANCELLED = 0, 1, 2, 3, 4
+MODES = ("plan", "accept-edits", "auto", "default")
+AGY_EFFORTS = ("low", "medium", "high")  # Gemini 3.8 Flash thinking levels
+CLAUDE_EFFORTS = ("low", "medium", "high", "xhigh", "max")
+AGY_MODEL = "gemini-3.8-flash"  # the only model Antigravity workers use
+CLAUDE_MODES = {"plan": "plan", "accept-edits": "acceptEdits", "auto": "auto", "default": ""}
+# Claude Code puts these into the environment of its tools: a claude started with them thinks it is a child session.
+CLAUDE_SESSION_VARS = ("CLAUDECODE", "AI_AGENT", "CLAUDE_PID", "CLAUDE_EFFORT", "CLAUDE_CODE_CHILD_SESSION",
+                       "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_SESSION_ATTENDED", "CLAUDE_CODE_ENTRYPOINT",
+                       "CLAUDE_CODE_EXECPATH", "CLAUDE_CODE_MESSAGING_SOCKET", "CLAUDE_CODE_MESSAGING_TOKEN",
+                       "CLAUDE_CODE_SSE_PORT")
+
+
+def die(msg, code=FAIL):
+    print(f"{CMD}: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+# ------------------------------------------------------------------ arguments
+
+def worker_id(name):
+    """The worker id for the account named on the command line ("acc2", "claude:.claude-work")."""
+    if TOOL == "agy":
+        acc = name[4:] if name.startswith("agy:") else name
+        if acc.startswith("claude:") or acc.startswith(".claude"):
+            die(f"{name} is a Claude Code account: use claude-ask")
+        return acc
+    acc = name[7:] if name.startswith("claude:") else name
+    if acc.startswith("acc") or acc.startswith("agy:"):
+        die(f"{name} is an Antigravity account: use agy-ask")
+    return "claude:" + (acc if acc.startswith(".") else f".claude-{acc}")
+
+
+def flag(extra, name):
+    """Value of a flag passed through (e.g. --model X), or ""."""
+    return extra[extra.index(name) + 1] if name in extra[:-1] else ""
+
+
+def parse(argv):
+    if len(argv) < 2:
+        die(f"usage: {USAGE}")
+    a = {"worker": worker_id(argv[0]), "prompt": argv[1], "mode": "", "role": "", "effort": "", "model": "",
+         "max": 2000, "cwd": os.getcwd(), "timeout": 900, "extra": []}
+    rest = argv[2:]
+    while rest:
+        k = rest.pop(0)
+        if k in ("--mode", "--role", "--max", "--cwd", "--timeout", "--effort", "--model"):
+            if not rest:
+                die(f"{k} needs a value")
+            v = rest.pop(0)
+            try:
+                a[k[2:]] = int(v) if k in ("--max", "--timeout") else v
+            except ValueError:
+                die(f"{k} needs a number")
+        else:
+            a["extra"].append(k)  # passed to agy / claude as is
+    efforts = AGY_EFFORTS if TOOL == "agy" else CLAUDE_EFFORTS
+    if a["effort"] and a["effort"] not in efforts:
+        die(f"--effort must be one of {', '.join(efforts)}")
+    if TOOL == "agy" and a["model"] and a["model"] not in [AGY_MODEL] + [f"{AGY_MODEL}-{e}" for e in AGY_EFFORTS]:
+        die(f"workers only use {AGY_MODEL} (got --model {a['model']!r}); choose the thinking level with --effort")
+    if a["mode"] and a["mode"] not in MODES and not (TOOL == "claude" and a["mode"] in CLAUDE_MODES.values()):
+        die(f"--mode must be one of {', '.join(MODES)}")
+    d = defaults(a["worker"])
+    a["mode"] = a["mode"] or d.get("mode") or ("plan" if TOOL == "agy" else "default")
+    if not a["effort"] and d.get("effort") in efforts:
+        a["effort"] = d["effort"]
+    a["cwd"] = os.path.abspath(a["cwd"])
+    return a
+
+
+def defaults(worker):
+    """The worker's defaults for calls that do not say (defaults.json), or {}."""
+    try:
+        with open(DEFAULTS) as f:
+            d = json.load(f).get(worker)
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError, AttributeError):
+        return {}
+
+
+# ------------------------------------------------------------------ who is asking, and the team rule
+
+def parent(pid):
+    with open(f"/proc/{pid}/stat") as f:
+        return int(f.read().rsplit(")", 1)[1].split()[1])
+
+
+def env_of(pid, name):
+    try:
+        with open(f"/proc/{pid}/environ", "rb") as f:
+            for kv in f.read().split(b"\0"):
+                if kv.startswith(name.encode() + b"="):
+                    return kv.split(b"=", 1)[1].decode(errors="replace")
+    except OSError:
+        pass
+    return None
+
+
+def caller():
+    """The nearest `claude` ancestor ({claude_pid}), the nearest `agy` one with its HOME ({agy_pid, agy_home}), and
+    the nearest of the two ({pid}: the agent that asked)."""
+    found = {"claude_pid": None, "agy_pid": None, "agy_home": None, "pid": None}
+    pid = os.getppid()
+    for _ in range(32):
+        if pid <= 1:
+            break
+        try:
+            with open(f"/proc/{pid}/comm") as f:
+                comm = f.read().strip()
+            if comm == "claude" and not found["claude_pid"]:
+                found["claude_pid"] = pid
+                found["pid"] = found["pid"] or pid
+            elif comm == "agy" and not found["agy_pid"]:
+                found["agy_pid"], found["agy_home"] = pid, env_of(pid, "HOME")
+                found["pid"] = found["pid"] or pid
+            pid = parent(pid)
+        except (OSError, ValueError, IndexError):
+            break
+    return found
+
+
+def team():
+    """The team file ({"boss": {...}, "workers": [...]}), or None (no file: no rule)."""
+    try:
+        with open(TEAM) as f:
+            t = json.load(f)
+        return t if isinstance(t, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+def norm_worker(w):
+    return w[4:] if isinstance(w, str) and w.startswith("agy:") else w
+
+
+def boss_of(t):
+    b = t.get("boss") if t else None
+    return b if isinstance(b, dict) else None
+
+
+def boss_worker(boss):
+    """The worker id of the boss's own account."""
+    if boss.get("kind") == "agy":
+        return norm_worker(boss.get("acc") or boss.get("account") or "")
+    return f"claude:{boss.get('account')}"
+
+
+def is_boss(boss, who):
+    if boss.get("kind") == "agy":
+        home = who["agy_home"]
+        return bool(home) and os.path.realpath(home) == os.path.realpath(f"{ROOT}/{boss_worker(boss)}")
+    return bool(who["claude_pid"]) and who["claude_pid"] == boss.get("pid")
+
+
+def check_team(worker, who):
+    """'you' (office), 'boss' or 'script'; refuses (exit 2) a job the team rule does not allow."""
+    if os.environ.get("AGY_ASK_FROM_OFFICE") == "1":
+        return "you"
+    t = team()
+    boss = boss_of(t)
+    if t is None:
+        return "boss" if who["pid"] else "script"
+    if boss:
+        if not is_boss(boss, who):
+            die(f"only the boss {boss.get('name') or boss.get('id') or '?'} may give jobs (appointed in Habblaud); this call is not from it", REFUSED)
+        if worker == boss_worker(boss):
+            die(f"{worker} is the boss's own account", REFUSED)
+    workers = t.get("workers")
+    if isinstance(workers, list) and worker not in [norm_worker(w) for w in workers]:
+        listed = ", ".join(norm_worker(w) for w in workers) or "none"
+        die(f"{worker} is not a registered worker (workers: {listed}; add it in Habblaud)", REFUSED)
+    return "boss" if boss or who["pid"] else "script"
+
+
+def print_team():
+    t = team()
+    if t is None:
+        print("no team file: any caller may give jobs to any account")
+        return
+    boss = boss_of(t)
+    if boss:
+        kind = "Antigravity" if boss.get("kind") == "agy" else "Claude Code"
+        print(f"boss: {boss.get('name') or boss.get('id')} ({kind}, account {boss_worker(boss)})")
+    else:
+        print("boss: none (anyone may give jobs)")
+    print(f"workers: {', '.join(norm_worker(w) for w in t.get('workers') or []) or 'none'}")
+
+
+# ------------------------------------------------------------------ the office (Habblaud)
+
+class NoOffice(Exception):
+    """The office is not running or has no worker terminals: run headless."""
+
+
+def http(method, path, body=None, timeout=10):
+    """(status, json) from the office; NoOffice when it does not answer."""
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(URL + path, data=data, method=method,
+                                 headers={"Content-Type": "application/json"} if data is not None else {})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.status, json.loads(r.read() or b"{}")
+    except urllib.error.HTTPError as e:
+        try:
+            payload = json.loads(e.read() or b"{}")
+        except ValueError:
+            payload = {}
+        return e.code, payload if isinstance(payload, dict) else {}
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        raise NoOffice(str(e))
+
+
+def busy_help(worker, message):
+    print(f"{CMD}: {worker} is busy: {message}", file=sys.stderr)
+    print(f"{CMD}: run `agy-ask --wait-release {worker}` and ask again, or give the job to another worker", file=sys.stderr)
+    sys.exit(BUSY)
+
+
+def via_office(a, by, who):
+    """Runs the job in the worker's terminal and waits for its answer; NoOffice to fall back to headless."""
+    body = {"worker": a["worker"], "prompt": a["prompt"], "cwd": a["cwd"], "max": a["max"], "by": by,
+            "mode": a["mode"], "callerPid": who["pid"]}
+    for k in ("role", "effort", "model"):
+        if a[k]:
+            body[k] = a[k]
+    status, r = http("POST", "/api/workers/ask", body)
+    if status in (404, 503):
+        raise NoOffice(r.get("error") or str(status))
+    if status == 409:
+        busy_help(a["worker"], r.get("message") or r.get("reason") or "BUSY")
+    if status == 403:
+        die(r.get("error") or "refused by the office", REFUSED)
+    if status >= 300 or not isinstance(r.get("job"), dict):
+        die(r.get("error") or f"the office answered {status}")
+    job = r["job"]
+    t0, deadline = time.time(), time.time() + a["timeout"]
+
+    def cancel(*_):
+        try:
+            http("POST", "/api/workers/cancel", {"job": job["id"]}, timeout=5)
+        except NoOffice:
+            pass
+
+    def on_signal(sig, _):  # the caller gave up (Bash timeout, Ctrl-C): cancel the job in the office too
+        cancel()
+        sys.exit(128 + sig)
+
+    signal.signal(signal.SIGTERM, on_signal)
+    signal.signal(signal.SIGINT, on_signal)
+    misses = 0
+    while job.get("status") in ("queued", "working"):
+        left = deadline - time.time()
+        if left <= 0:
+            cancel()
+            die(f"{a['worker']} TIMEOUT after {round(time.time() - t0)}s (job cancelled)")
+        try:
+            status, r = http("GET", f"/api/workers/jobs/{urllib.parse.quote(job['id'])}?wait={max(1, min(60, int(left)))}",
+                             timeout=min(60, left) + 15)
+            misses = 0
+        except NoOffice as e:  # the office went away mid-job: the job may still be running there
+            misses += 1
+            if misses >= 3:
+                die(f"lost the office while waiting for job {job['id']}: {e}")
+            time.sleep(2)
+            continue
+        if status != 200 or not isinstance(r.get("job"), dict):
+            die(r.get("error") or f"the office answered {status} for job {job['id']}")
+        job = r["job"]
+    st = job.get("status")
+    if st == "done":
+        out = (job.get("answer") or "").rstrip("\n")
+        print(out if len(out) <= a["max"] else f"{out[:a['max']]}\n[... cut at {a['max']} chars]")
+        sys.exit(OK)
+    if st == "paused":
+        busy_help(a["worker"], "you took the wheel; the job is paused")
+    if st == "cancelled":
+        die(f"job {job['id']} on {a['worker']} was cancelled from the office", CANCELLED)
+    die(f"{a['worker']} {st or 'ERROR'} after {round(time.time() - t0)}s: {job.get('error') or ''}".rstrip(": "))
+
+
+def wait_release(worker, timeout):
+    """Waits until nobody drives the worker (exit 0); no office = nothing to wait for."""
+    deadline = time.time() + timeout
+    while True:
+        left = deadline - time.time()
+        if left <= 0:
+            die(f"{worker} is still driven by you after {timeout}s")
+        try:
+            status, r = http("GET", f"/api/workers/state?worker={urllib.parse.quote(worker)}&wait={max(1, min(60, int(left)))}",
+                             timeout=min(60, left) + 15)
+        except NoOffice:
+            print(f"{worker}: the office is not running; nothing to wait for")
+            return
+        if status in (404, 503):
+            print(f"{worker}: the office has no worker terminals; nothing to wait for")
+            return
+        if status != 200:
+            die(r.get("error") or f"the office answered {status}")
+        if not r.get("driving"):
+            print(f"{worker} is free" if not r.get("busy") else f"{worker} is back (still finishing a job)")
+            return
+
+
+# ------------------------------------------------------------------ headless (no office)
+
+def log(entry):
+    try:
+        with open(LOG, "a") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+
+
+def log_start(a, who, t0):
+    acc = a["worker"]
+    log({"event": "start", "ts": t0, "acc": acc, "worker": acc, "via": "headless", "pid": os.getpid(), "mode": a["mode"],
+         "role": a["role"], "model": a["model"], "effort": a["effort"], "claude_pid": who["claude_pid"],
+         "cwd": a["cwd"], "prompt": a["prompt"][:200]})
+
+
+def log_end(a, t0, **fields):
+    log({"event": "end", "ts": time.time(), "acc": a["worker"], "worker": a["worker"], "via": "headless",
+         "pid": os.getpid(), "sec": round(time.time() - t0), **fields})
+
+
+def finish(a, t0, status, answer, other, fields):
+    """Logs the end, prints the answer (or the error) and exits."""
+    end = {"status": status, **fields}
+    if status != "SUCCESS":  # last error lines (e.g. 429 "Individual quota reached"): Habblaud shows quota hits
+        end["error"] = ("\n".join(other[-5:]) or answer or "")[-300:]
+    log_end(a, t0, **end)
+    if status != "SUCCESS":
+        print(f"{CMD}: {a['worker']} {status} after {round(time.time() - t0)}s:", file=sys.stderr)
+        print("\n".join(other[-5:]) or answer, file=sys.stderr)
+        sys.exit(FAIL)
+    out = (answer or "").rstrip("\n")
+    print(out if len(out) <= a["max"] else f"{out[:a['max']]}\n[... cut at {a['max']} chars]")
+    sys.exit(OK)
+
+
+def headless_agy(a, who):
+    acc = a["worker"]
+    cmd = ["agy-as", acc, "-p", a["prompt"], "--output-format", "stream-json"]
+    if a["mode"] != "default":
+        cmd += ["--mode", a["mode"]]
+    if a["effort"]:
+        cmd += ["--effort", a["effort"]]
+    if a["model"]:
+        cmd += ["--model", a["model"]]
+    cmd += a["extra"]
+    env = dict(os.environ, PATH=f"{HOME}/.local/bin:" + os.environ.get("PATH", ""))
+    t0 = time.time()
+    log_start(a, who, t0)
+    p = subprocess.Popen(cmd, cwd=a["cwd"], env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                         stderr=subprocess.STDOUT, text=True, start_new_session=True)
+    st = {"cid": None, "result": None, "other": []}
+
+    def cleanup(*_):
+        try:
+            os.killpg(p.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        if st["cid"]:  # a killed call leaves a ~32 MB .db-wal behind
+            conv = f"{HOME}/.agy_profiles/{acc}/.gemini/antigravity-cli/conversations/{st['cid']}.db"
+            for f in glob.glob(conv + "*"):
+                try:
+                    os.remove(f)
+                except OSError:
+                    pass
+
+    def on_signal(sig, _):  # caller gave up (Bash timeout, Ctrl-C): take the worker down with us
+        cleanup()
+        log_end(a, t0, cid=st["cid"], status="KILLED")
+        sys.exit(128 + sig)
+
+    signal.signal(signal.SIGTERM, on_signal)
+    signal.signal(signal.SIGINT, on_signal)
+
+    def reader():
+        for ln in p.stdout:
+            if ln.startswith('{"event":"init"'):
+                st["cid"] = json.loads(ln).get("conversation_id")
+            elif ln.startswith('{"event":"result"'):
+                st["result"] = json.loads(ln).get("result", {})
+                return
+            elif not ln.startswith('{"event":'):
+                st["other"].append(ln.rstrip())  # errors, quota messages
+
+    th = threading.Thread(target=reader, daemon=True)
+    th.start()
+    th.join(a["timeout"])
+    cleanup()
+    r = st["result"] or {}
+    status = r.get("status") or ("TIMEOUT" if th.is_alive() else "NO_RESULT")
+    finish(a, t0, status, r.get("response", ""), st["other"],
+           {"cid": st["cid"], "turns": r.get("num_turns"), "usage": r.get("usage")})
+
+
+def headless_claude(a, who):
+    account = a["worker"][len("claude:"):]
+    conf = f"{HOME}/{account}"
+    if not os.path.isdir(conf):
+        die(f"no Claude Code account folder {conf}")
+    cmd = ["claude", "-p", a["prompt"], "--output-format", "json", "--no-session-persistence"]
+    mode = CLAUDE_MODES.get(a["mode"], a["mode"])
+    if mode:
+        cmd += ["--permission-mode", mode]
+    if a["effort"]:
+        cmd += ["--effort", a["effort"]]
+    if a["model"]:
+        cmd += ["--model", a["model"]]
+    cmd += a["extra"]
+    env = {k: v for k, v in os.environ.items() if k not in CLAUDE_SESSION_VARS}
+    env["PATH"] = f"{HOME}/.local/bin:" + env.get("PATH", "")
+    if account == ".claude":
+        env.pop("CLAUDE_CONFIG_DIR", None)
+    else:
+        env["CLAUDE_CONFIG_DIR"] = conf
+    t0 = time.time()
+    log_start(a, who, t0)
+    p = subprocess.Popen(cmd, cwd=a["cwd"], env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                         stderr=subprocess.PIPE, text=True, start_new_session=True)
+
+    def kill():
+        try:
+            os.killpg(p.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+    def on_signal(sig, _):
+        kill()
+        log_end(a, t0, status="KILLED")
+        sys.exit(128 + sig)
+
+    signal.signal(signal.SIGTERM, on_signal)
+    signal.signal(signal.SIGINT, on_signal)
+    try:
+        out, err = p.communicate(timeout=a["timeout"])
+    except subprocess.TimeoutExpired:
+        kill()
+        finish(a, t0, "TIMEOUT", "", [], {})
+    try:
+        r = json.loads(out.strip().splitlines()[-1]) if out.strip() else {}
+    except ValueError:
+        r = {}
+    ok = r.get("subtype") == "success" and not r.get("is_error")
+    u = r.get("usage") or {}
+    usage = None
+    if u:
+        usage = {"input_tokens": u.get("input_tokens", 0), "output_tokens": u.get("output_tokens", 0),
+                 "cache_read_tokens": u.get("cache_read_input_tokens", 0)}
+        usage["total_tokens"] = usage["input_tokens"] + usage["output_tokens"] + usage["cache_read_tokens"] + u.get("cache_creation_input_tokens", 0)
+    other = [ln for ln in (err or "").splitlines() if ln.strip()] or ([] if ok else [ln for ln in out.splitlines() if ln.strip()][-5:])
+    finish(a, t0, "SUCCESS" if ok else (r.get("subtype") or "ERROR").upper(), r.get("result", ""), other,
+           {"cid": r.get("session_id"), "turns": r.get("num_turns"), "usage": usage})
+
+
+# ------------------------------------------------------------------ main
+
+def main():
+    argv = sys.argv[1:]
+    if argv == ["team"]:
+        return print_team()
+    if argv[:1] == ["--wait-release"]:
+        if len(argv) < 2:
+            die("usage: agy-ask --wait-release <worker> [--timeout SEC]")
+        timeout = int(flag(argv, "--timeout") or 3600)
+        name = argv[1]
+        return wait_release(name if name.startswith(("claude:", "acc")) else "claude:" + name if name.startswith(".claude") else worker_id(name), timeout)
+    a = parse(argv)
+    if not os.path.isdir(a["cwd"]):
+        die(f"no such directory {a['cwd']}")
+    who = caller()
+    by = check_team(a["worker"], who)
+    try:
+        via_office(a, by, who)
+    except NoOffice:
+        pass
+    (headless_agy if TOOL == "agy" else headless_claude)(a, who)
+
+
+if __name__ == "__main__":
+    main()
