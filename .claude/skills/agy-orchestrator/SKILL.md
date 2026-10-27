@@ -1,6 +1,6 @@
 ---
 name: agy-orchestrator
-description: Orchestrate `agy` (Antigravity CLI) workers through herdr - open isolated per-account panes, send prompts, wait for completion, read results. Use when the user asks to delegate/giao việc/chia việc to other agents, check what a worker returned, or run work in parallel across Google accounts (acc1..acc6).
+description: Give jobs to worker agents with `agy-ask` (Antigravity accounts acc1..acc6) and `claude-ask` (Claude Code accounts), within the team the user set in Habblaud, or drive `agy` panes through herdr. Use when the user asks to delegate/giao việc/chia việc to other agents, check what a worker returned, or run work in parallel across accounts.
 ---
 
 # agy orchestrator (herdr)
@@ -10,26 +10,46 @@ You drive `agy` workers, one Google account per profile (`~/.agy_profiles/accN`)
 ## Golden rule: never run bare `agy`
 A bare `agy` uses the machine's real account and can mix tokens. Always start workers with `agy-up` / `agy-as` (both in `~/.local/bin`, sources in `docs/scripts.md`): they give each account its own HOME, D-Bus session and gnome-keyring.
 
-## Cheapest path first: `agy-ask`
+## Giving jobs: `agy-ask` and `claude-ask`
 For one self-contained job (read/summarize files, search, write a test from a spec) do NOT open a pane:
 ```bash
-agy-ask acc2 "<prompt>" --role <label> --mode <plan|accept-edits|default> --effort <low|medium|high> [--cwd DIR] [--max 3000] [--timeout 900]
+agy-ask acc2 "<prompt>" --role <label> --mode <plan|accept-edits|default> --effort <low|medium|high> [--cwd DIR] [--max 2000] [--timeout 900]
+claude-ask .claude-work "<prompt>" --role <label> --mode <default|plan|accept-edits> --effort <low..max> [--model sonnet] [--cwd DIR] [--max 2000] [--timeout 900]
 ```
-It runs `agy-as acc2 -p ... --output-format stream-json` (isolated account) and prints only the final answer, capped at `--max` chars; default mode `plan` is read-only, use `--mode accept-edits` when the worker must edit files. It blocks until done (30s-3min): run it with `run_in_background`, and several in parallel on different accounts. Use panes (`agy-up`, below) only when the job needs several steps, supervision, approvals, or the user wants to watch.
+Both print only the worker's final answer (capped at `--max` chars). A Claude Code worker is named by its account
+(`.claude-work`, `claude:.claude-work` or `work`); it is far more expensive than an Antigravity one, so give it only what
+Flash cannot do well. Each call blocks until done (30s-3min): run it with `run_in_background`, several in parallel on
+different workers. Use panes (`agy-up`, below) only when the user asks for herdr.
 
-It stops at the `result` event (agy -p often answers and then never exits), kills the process group, deletes that call's conversation `.db*` files, and exits 1 with `TIMEOUT` after `--timeout` seconds. Killing `agy-ask` (Bash timeout, TaskStop) also kills its worker. Always pass `--role` (a short label for this job: `impl`, `qa`, `review`, `research`, `data`...): the office (Habblaud) shows it as the worker's title while it works; without it the account's default from `roles.conf` is shown. Every call logs `start`/`end` lines with status, seconds and token `usage` to `~/.agy_profiles/agy-ask.log.jsonl`: read that file to see what a job really cost.
+- **With the office running** (Habblaud), the job goes into the worker's own terminal as a fresh conversation and the
+  command waits on the server: you spend nothing while waiting and get the final answer only. **Never read a worker's
+  screen or type into its terminal**: that is the user's seat (they can take the wheel at any time).
+- **Without the office** (not running, or an older Habblaud), the same command runs the job headless (`agy -p` /
+  `claude -p`), as before. Same answer, same exit codes.
+- Killing the command (Bash timeout, TaskStop) cancels the job; `--timeout` (seconds) cancels it too and exits 1.
+- Always pass `--role` (a short label: `impl`, `qa`, `review`, `research`, `data`...): the office shows it as the
+  worker's title. Headless calls log `start`/`end` lines with tokens to `~/.agy_profiles/agy-ask.log.jsonl` (the office
+  logs the jobs it runs there too): read it to see what a job really cost.
+
+| Exit | Meaning | What you do |
+| --- | --- | --- |
+| 0 | done, answer printed | check it, use it |
+| 1 | failed / timeout / error (message on stderr) | read the message; retry once or do it yourself |
+| 2 | refused by the team rule | do not retry, do not work around it (below) |
+| 3 | BUSY or PAUSED: the user is driving that worker, or it is on another job | `agy-ask --wait-release <worker>` (in the background) then ask again, or give the job to another worker |
+| 4 | the user cancelled the job from the office | do not resend it unasked; tell the user |
 
 ### Team rule: only the boss gives jobs, only to workers
 The user picks the team in Habblaud (`~/.agy_profiles/team.json`). Run `agy-ask team` before delegating: it prints the
-boss and the registered workers. When a boss is appointed, `agy-ask` refuses (exit 2) any call that is not from the
-boss session ("only the boss X may give jobs") and any account that is not a registered worker ("accN is not a
-registered worker"). If you are not the boss, do not delegate: do the work yourself or tell the user. Never call an
-account outside the worker list, and never get around the rule (do not set `AGY_ASK_FROM_OFFICE`: it is for jobs the
-user sends from the office). No team file = no rule.
+boss and the registered workers (`acc2`, `claude:.claude-work`). When a boss is appointed (a Claude Code session or an
+Antigravity account), both commands refuse (exit 2) a call that is not from the boss, a job for the boss's own
+account, and any account that is not a registered worker. If you are not the boss, do not delegate: do the work
+yourself or tell the user. Never call an account outside the worker list, and never get around the rule (do not set
+`AGY_ASK_FROM_OFFICE`: it is for jobs the user sends from the office). No team file = no rule.
 
 ### Choosing mode and effort (you decide, every call)
 The user does not pick these by hand: you choose them per job and always pass `--role`, `--mode` and `--effort` explicitly
-(the office shows them; the log records them). Workers run **Gemini 3.8 Flash only**: never pass `--model` (agy-ask
+(the office shows them; the log records them). Antigravity workers run **Gemini 3.8 Flash only**: never pass `--model` (agy-ask
 rejects anything but `gemini-3.8-flash[-low|-medium|-high]`); the account default is Flash at high effort.
 
 | Job | `--mode` | `--effort` |
@@ -85,7 +105,7 @@ herdr agent send-keys <pane> esc | enter | down | right    # key names only, not
 herdr pane send-text <pane> "/help"                        # raw text (then send-keys enter)
 herdr agent explain <pane>                                 # why herdr thinks it is idle/blocked
 ```
-Run long waits with `run_in_background`. `blocked` means the worker waits for an approval or a question: `read` it and tell the user, do not guess. Verify what matters yourself before reporting it as done.
+Herdr panes are the old way (the user's own herdr setup); workers in the office have their own terminals that only the user drives. Run long waits with `run_in_background`. `blocked` means the worker waits for an approval or a question: `read` it and tell the user, do not guess. Verify what matters yourself before reporting it as done.
 Save context: ask the worker for a short answer (<= 25 lines) and read only that; do not paste raw screens back.
 
 ## agy modes and flags (`agy --help`)
@@ -103,7 +123,7 @@ Save context: ask the worker for a short answer (<= 25 lines) and read only that
 You plan; workers execute. Always write the plan, scope and definition of done yourself first: workers share no context, so a vague prompt gives a vague result.
 - **Delegate** when the spec is clear and the work is mechanical and long: code from a spec, writing/running tests, bulk edits, reading many files and summarizing, data gathering. Long output costs the worker's quota, not yours.
 - **Keep** design, hard debugging, security-sensitive changes, merging results, final review, and anything under a few lines (a delegation round costs more than doing it).
-- Pick by role (`acc2-impl` code, `acc3-qa` tests, `acc4-review` read-only review); self-contained one-shots go through `agy-ask`.
+- Pick by role (`acc2-impl` code, `acc3-qa` tests, `acc4-review` read-only review); self-contained one-shots go through `agy-ask` / `claude-ask`.
 
 ## Worker-to-worker work
 Do not let workers chat freely: no one supervises it, loops burn two accounts' quota, and failures are hard to trace. In order of preference:
