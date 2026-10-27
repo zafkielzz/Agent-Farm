@@ -13,15 +13,35 @@ A bare `agy` uses the machine's real account and can mix tokens. Always start wo
 ## Cheapest path first: `agy-ask`
 For one self-contained job (read/summarize files, search, write a test from a spec) do NOT open a pane:
 ```bash
-agy-ask acc2 "<prompt>" [--mode plan|accept-edits|auto|default] [--role qa|review|impl|...] [--cwd DIR] [--max 3000] [--timeout 900] [agy flags, e.g. --effort low]
+agy-ask acc2 "<prompt>" --role <label> --mode <plan|accept-edits|default> --effort <low|medium|high> [--cwd DIR] [--max 3000] [--timeout 900]
 ```
 It runs `agy-as acc2 -p ... --output-format stream-json` (isolated account) and prints only the final answer, capped at `--max` chars; default mode `plan` is read-only, use `--mode accept-edits` when the worker must edit files. It blocks until done (30s-3min): run it with `run_in_background`, and several in parallel on different accounts. Use panes (`agy-up`, below) only when the job needs several steps, supervision, approvals, or the user wants to watch.
 
 It stops at the `result` event (agy -p often answers and then never exits), kills the process group, deletes that call's conversation `.db*` files, and exits 1 with `TIMEOUT` after `--timeout` seconds. Killing `agy-ask` (Bash timeout, TaskStop) also kills its worker. Always pass `--role` (a short label for this job: `impl`, `qa`, `review`, `research`, `data`...): the office (Habblaud) shows it as the worker's title while it works; without it the account's default from `roles.conf` is shown. Every call logs `start`/`end` lines with status, seconds and token `usage` to `~/.agy_profiles/agy-ask.log.jsonl`: read that file to see what a job really cost.
 
+### Choosing mode and effort (you decide, every call)
+The user does not pick these by hand: you choose them per job and always pass `--role`, `--mode` and `--effort` explicitly
+(the office shows them; the log records them). Workers run **Gemini 3.8 Flash only**: never pass `--model` (agy-ask
+rejects anything but `gemini-3.8-flash[-low|-medium|-high]`); the account default is Flash at high effort.
+
+| Job | `--mode` | `--effort` |
+| --- | --- | --- |
+| Lookup in named files, grep/count, format conversion, string translation, simple labelling | `plan` (read) or `accept-edits` (writes) | `low` |
+| Summarise several files, code or tests from a clear spec, bulk mechanical edits | `plan` / `accept-edits` | `medium` |
+| Review, audit, root-cause debugging, anything that needs judgement or a multi-file plan | `plan` | `high` |
+| Batch labelling/transforming with the data inside the prompt | `default` (plan mode drafts a plan instead of answering) | `low`/`medium` |
+
+- `plan` = read-only (never implementation work); `accept-edits` = may edit files, cwd = the folder it writes to;
+  `auto` is not available on these accounts.
+- Effort savings are **not measured yet**: thinking tokens count as output, so lower effort should cost less of the Gemini
+  quota, but check `thinking_tokens`/`total_tokens` in `agy-ask.log.jsonl` before relying on it. If a `low` job comes back
+  wrong or shallow, rerun it at `medium`, not `high`.
+- Quota (Antigravity docs + `/usage`): two separate pools, "Gemini Models" and "Claude and GPT models", each with a
+  5-hour and a weekly limit; Gemini draws down by tokens × API price. Workers only use the Gemini pool.
+
 ### What drives worker cost (measured 2026-10-26)
 - **Steps, not mode.** Each agent step re-sends the whole context: read-only jobs ran 9-29 steps and 50-180k input tokens; even "reply OK" costs ~7.5k (tool list + rules). Plan vs default mode on the same 3 read-only jobs: 330k vs 349k tokens total, same answer quality, no files changed. The ~3.5x plan-mode cost seen 2026-10-18 was batch labelling with the data in the prompt, where plan mode drafted a plan instead of answering; for that kind of job call `agy-as -p` without a mode (see `13_l2_run_fast.py`).
-- **Cheapest lever:** name exact files, line ranges or paste the snippet in the prompt so the worker does not explore. `--effort low` for trivial lookups (untested on quality).
+- **Cheapest lever:** name exact files, line ranges or paste the snippet in the prompt so the worker does not explore; then a lower `--effort` (table above).
 
 ### agy-ask pitfalls (learned 2026-10-16)
 - **Preflight every account before real work:** `agy-ask accN "Run: echo ok && pwd" --mode accept-edits --cwd DIR --max 200`. Headless mode cannot prompt, so a missing `permissions.allow` (`command(*)` etc.) in `~/.agy_profiles/accN/.gemini/antigravity-cli/settings.json` makes the worker exit at once with `jetski: no output produced ... auto-denied`. Only acc2-acc4 had it at first; acc5/acc6 did not. Do not edit those settings yourself (blocked as self-modification): give the user the command.
@@ -61,7 +81,7 @@ Save context: ask the worker for a short answer (<= 25 lines) and read only that
 - `--mode plan` - read-only: researches and writes a plan **artifact**, does not run shell commands or edit code, then waits for approval. Never give it implementation work. **herdr's `agent prompt` to a plan-mode pane arrives as `/plan <prompt>`.**
 - `--mode accept-edits` - edits files without asking; `--mode auto` - auto-approves more; plain `agy` - interactive, asks for approval (shows up as `blocked`).
 - `--dangerously-skip-permissions` auto-approves every tool call: only on the user's explicit say-so.
-- `--model <m>`, `--effort low|medium|high|xhigh|max`, `-c/--continue`, `--conversation <id>`, `--add-dir DIR`, `--project`, `--sandbox`.
+- `--effort low|medium|high` (Flash levels; never `--model`: workers use Gemini 3.8 Flash only), `-c/--continue`, `--conversation <id>`, `--add-dir DIR`, `--project`, `--sandbox`.
 - Non-interactive one-shot: `agy-as accN -p "<prompt>" --output-format text|json|stream-json` (`--print-timeout`, `--json-schema`). No pane needed; cheapest for a single self-contained job.
 - Subcommands: `agy agent(s)` lists custom agents, `agy changelog`.
 

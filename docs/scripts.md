@@ -40,11 +40,11 @@ exec agy "$@"
 
 ## agy-ask
 
-Viết bằng Python (cần `python3`): đọc `stream-json`, dừng ở sự kiện `result`, kill cả nhóm process và xoá file hội thoại của lần gọi; mỗi lần gọi ghi một dòng `start` (role, mode, model, effort, PID của Claude đã gọi, prompt; trước khi agy chạy) và một dòng `end` (trạng thái, số giây, token) vào `~/.agy_profiles/agy-ask.log.jsonl`, cả hai kèm PID của agy-ask. `--role` là nhãn tự do cho việc (qa, review, impl...), Habblaud hiện nó làm tiêu đề của worker khi đang làm.
+Viết bằng Python (cần `python3`): đọc `stream-json`, dừng ở sự kiện `result`, kill cả nhóm process và xoá file hội thoại của lần gọi; mỗi lần gọi ghi một dòng `start` (role, mode, model, effort, PID của Claude đã gọi, prompt; trước khi agy chạy) và một dòng `end` (trạng thái, số giây, token) vào `~/.agy_profiles/agy-ask.log.jsonl`, cả hai kèm PID của agy-ask. `--role` là nhãn tự do cho việc (qa, review, impl...), Habblaud hiện nó làm tiêu đề của worker khi đang làm. Worker chỉ chạy Gemini 3.8 Flash: `--model` khác bị từ chối, `--effort` chỉ nhận low/medium/high.
 
 ```python
 #!/usr/bin/env python3
-"""agy-ask <accN> "<prompt>" [--mode plan|accept-edits|auto|default] [--role NAME] [--cwd DIR] [--max N] [--timeout SEC] [agy flags]
+"""agy-ask <accN> "<prompt>" [--mode plan|accept-edits|auto|default] [--effort low|medium|high] [--role NAME] [--cwd DIR] [--max N] [--timeout SEC] [agy flags]
 One-shot worker call through agy-as (isolated account): prints ONLY the final answer, capped at N chars
 (default 3000). Cheapest way to delegate a self-contained job; no pane, no screen reads.
 
@@ -53,10 +53,14 @@ the "result" event, kills the whole process group, and deletes that call's conve
 a ~32 MB .db-wal behind). Each call appends a "start" line (role, mode, prompt) before agy starts and an
 "end" line (status, seconds, token usage) to ~/.agy_profiles/agy-ask.log.jsonl, both with the agy-ask PID (the
 parent of the agy process). --role is a free label for the job (e.g. qa, review, impl) that the office shows.
+Workers only run Gemini 3.8 Flash (the account default): --model accepts only gemini-3.8-flash[-low|-medium|-high],
+and --effort only the levels Flash has (low, medium, high); without --effort agy uses the account's default level.
 """
 import glob, json, os, signal, subprocess, sys, threading, time
 
 HOME = os.path.expanduser("~")
+EFFORTS = ("low", "medium", "high")  # Gemini 3.8 Flash thinking levels
+MODEL = "gemini-3.8-flash"  # the only model workers use
 LOG = f"{HOME}/.agy_profiles/agy-ask.log.jsonl"
 USAGE = __doc__.splitlines()[0]
 
@@ -79,7 +83,12 @@ def parse(argv):
             v = rest.pop(0)
             a[k[2:]] = int(v) if k in ("--max", "--timeout") else v
         else:
-            a["extra"].append(k)  # passed to agy as is (e.g. --model X, --effort low)
+            a["extra"].append(k)  # passed to agy as is (e.g. --effort low)
+    effort, model = flag(a["extra"], "--effort"), flag(a["extra"], "--model")
+    if "--effort" in a["extra"] and effort not in EFFORTS:
+        die(f"--effort must be one of {', '.join(EFFORTS)}")
+    if "--model" in a["extra"] and model not in [MODEL] + [f"{MODEL}-{e}" for e in EFFORTS]:
+        die(f"workers only use {MODEL} (got --model {model!r}); choose the thinking level with --effort")
     return a
 
 
