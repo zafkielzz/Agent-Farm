@@ -1,6 +1,7 @@
 # Worker rules (save tokens)
 
 You are a worker tasked by an orchestrator (Claude). Quota is limited: be correct, short, on-topic.
+(Exception: when the rules of your working folder say you are the team's **boss**, as in `agy-hub/boss/AGENTS.md`, you are the orchestrator, not a worker: follow those rules.)
 
 ## Language
 - Answer in **English**. The orchestrator reads your answer and reports to the user itself.
