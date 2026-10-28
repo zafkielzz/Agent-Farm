@@ -32,7 +32,11 @@ class Office(http.server.BaseHTTPRequestHandler):
 
 # A fake agent: writes team.json from $TEAM_TEMPLATE with its own PID for __PID__, then runs the command as a child
 # (not exec: it must stay an ancestor).
+# Headless (`claude -p ...`): answers at once with its arguments as the result.
 FAKE = """#!/bin/bash
+if [ "$1" = "-p" ]; then
+  exec python3 -c 'import json, sys; print(json.dumps({"subtype": "success", "result": json.dumps(sys.argv[1:]), "usage": {}}))' "$@"
+fi
 if [ -n "${TEAM_TEMPLATE:-}" ]; then printf '%s' "${TEAM_TEMPLATE//__PID__/$$}" > "$HABBLAUD_AGY_PROFILES/team.json"; fi
 "$@"
 exit $?
@@ -189,6 +193,47 @@ class TeamRule(unittest.TestCase):
         self.assertIn("office Habblaud (o1): /x/habblaud\n  boss: none\n  workers: acc1", out)
         self.assertIn("office News (o2): /x/news  <- you are its boss\n  boss: Raul (Claude Code, account claude:.claude)", out)
         self.assertNotIn("you: not a boss", out)
+
+    # -------------------------------------------------------------- lean Claude workers
+
+    def headless_args(self, extra=(), env=None):
+        """The arguments a headless claude-ask gives `claude` (no office, no team file)."""
+        os.makedirs(os.path.join(self.tmp, ".claude-w"), exist_ok=True)
+        e = {"HOME": self.tmp, "HABBLAUD_URL": "http://127.0.0.1:9", "PATH": f"{self.bin}:{os.environ['PATH']}", **(env or {})}
+        code, out, err = self.run_ask(["w", "ping", "--max", "500", *extra], env=e, tool="claude-ask")
+        self.assertEqual(code, 0, err)
+        return json.loads(out), err
+
+    def test_claude_headless_starts_lean_with_the_worker_rule(self):
+        args, _ = self.headless_args()
+        self.assertIn("--strict-mcp-config", args)
+        self.assertIn("--disable-slash-commands", args)
+        self.assertEqual(args[args.index("--tools") + 1], "Bash,Read,Edit,Write,WebFetch,WebSearch")
+        self.assertIn("under 500 characters", args[args.index("--append-system-prompt") + 1])
+
+    def test_claude_full_and_own_tools(self):
+        args, _ = self.headless_args(["--full"])
+        self.assertNotIn("--strict-mcp-config", args)
+        self.assertNotIn("--full", args)
+        args, _ = self.headless_args(["--tools", "Read"])
+        self.assertEqual(args.count("--tools"), 1)
+        self.assertEqual(args[args.index("--tools") + 1], "Read")
+
+    def test_claude_office_job_says_lean(self):
+        code, _, err = self.ask("w", tool="claude-ask")
+        self.assertEqual(code, 0, err)
+        self.assertIs(Office.bodies[-1]["lean"], True)
+        code, _, err = self.run_ask(["w", "ping", "--full"], tool="claude-ask")
+        self.assertNotIn("lean", Office.bodies[-1])
+        self.ask("acc1")
+        self.assertNotIn("lean", Office.bodies[-1])
+
+    def test_claude_same_account_note(self):
+        code, _, err = self.run_ask(["w", "ping"], via="claude", env={"CLAUDE_CONFIG_DIR": os.path.expanduser("~/.claude-w")}, tool="claude-ask")
+        self.assertEqual(code, 0, err)
+        self.assertIn("is the account you run on", err)
+        code, _, err = self.run_ask(["w", "ping"], via="claude", env={"CLAUDE_CONFIG_DIR": "/elsewhere"}, tool="claude-ask")
+        self.assertNotIn("account you run on", err)
 
     def test_team_not_a_boss(self):
         code, out, _ = self.run_ask(["team"], team=self.v3(boss2={"kind": "claude", "account": ".claude", "pid": 1}))

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """agy-ask <accN> "<prompt>" [--mode plan|accept-edits|auto|default] [--effort low|medium|high] [--role NAME] [--cwd DIR] [--max N] [--timeout SEC] [agy flags]
-claude-ask <account> "<prompt>" [--mode default|plan|accept-edits|auto] [--effort low|medium|high|xhigh|max] [--model M] [--role NAME] [--cwd DIR] [--max N] [--timeout SEC]
+claude-ask <account> "<prompt>" [--mode default|plan|accept-edits|auto] [--effort low|medium|high|xhigh|max] [--model M] [--full] [--role NAME] [--cwd DIR] [--max N] [--timeout SEC]
 agy-ask --wait-release <worker> [--timeout SEC]    wait until you hand the worker back (you took its wheel)
 agy-ask team                                       print the offices: folder, boss, workers
 
@@ -23,6 +23,11 @@ an ancestor `agy` runs with HOME=~/.agy_profiles/<boss acc>) gives jobs only to 
 own account, and the job carries the office id. A caller that is no office's boss is refused while any office has a
 boss; with no boss anywhere it may give jobs to any office's worker. Jobs sent from the office (AGY_ASK_FROM_OFFICE=1,
 with AGY_OFFICE=<id>; also usable by hand) skip the rule.
+
+Claude Code workers start lean unless --full: no MCP servers, no skills or slash commands, only the tools in LEAN_TOOLS
+(the default set costs ~24k tokens of context per job before any work, mostly the Workflow and Agent tools; lean ~8k),
+plus a short worker rule (answer only, compact, under --max chars). Through the office the job says "lean" and the
+office adds the same. Giving a job to the account you run on saves your context, not your quota (a note says so).
 
 Exit codes: 0 done; 1 failed, timeout or other error; 2 refused by the team rule; 3 BUSY or PAUSED: you are driving
 that worker (run `agy-ask --wait-release <worker>`, then ask again) or it is on another job (or pick another worker);
@@ -50,6 +55,10 @@ AGY_EFFORTS = ("low", "medium", "high")  # Gemini 3.8 Flash thinking levels
 CLAUDE_EFFORTS = ("low", "medium", "high", "xhigh", "max")
 AGY_MODEL = "gemini-3.8-flash"  # the only model Antigravity workers use
 CLAUDE_MODES = {"plan": "plan", "accept-edits": "acceptEdits", "auto": "auto", "default": ""}
+LEAN_TOOLS = "Bash,Read,Edit,Write,WebFetch,WebSearch"
+WORKER_RULE = ("You are a worker: another agent gave you this one job and reads only your final message. Do the job, "
+               "then reply with just the result, compact (no preamble, no recap of your steps), under {max} characters. "
+               "If you could not do it, say so plainly and why.")
 # Claude Code puts these into the environment of its tools: a claude started with them thinks it is a child session.
 CLAUDE_SESSION_VARS = ("CLAUDECODE", "AI_AGENT", "CLAUDE_PID", "CLAUDE_EFFORT", "CLAUDE_CODE_CHILD_SESSION",
                        "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_SESSION_ATTENDED", "CLAUDE_CODE_ENTRYPOINT",
@@ -88,7 +97,7 @@ def parse(argv):
     if len(argv) < 2:
         die(f"usage: {USAGE}")
     a = {"worker": worker_id(argv[0]), "prompt": argv[1], "mode": "", "role": "", "effort": "", "model": "",
-         "max": 2000, "cwd": os.getcwd(), "timeout": 900, "extra": []}
+         "max": 2000, "cwd": os.getcwd(), "timeout": 900, "full": False, "extra": []}
     rest = argv[2:]
     while rest:
         k = rest.pop(0)
@@ -100,6 +109,8 @@ def parse(argv):
                 a[k[2:]] = int(v) if k in ("--max", "--timeout") else v
             except ValueError:
                 die(f"{k} needs a number")
+        elif k == "--full" and TOOL == "claude":
+            a["full"] = True
         else:
             a["extra"].append(k)  # passed to agy / claude as is
     efforts = AGY_EFFORTS if TOOL == "agy" else CLAUDE_EFFORTS
@@ -222,6 +233,12 @@ def office_of_caller(t, who):
     return next((o for o in mine if o.get("id") == hint), mine[0] if mine else None)
 
 
+def same_account(worker, claude_pid):
+    """The Claude worker is the account of the calling claude (its CLAUDE_CONFIG_DIR, else ~/.claude)."""
+    conf = env_of(claude_pid, "CLAUDE_CONFIG_DIR") or f"{HOME}/.claude"
+    return os.path.realpath(conf) == os.path.realpath(f"{HOME}/{worker[len('claude:'):]}")
+
+
 def office_label(o):
     return f"{o.get('name') or o.get('id')} ({o.get('id')})"
 
@@ -322,6 +339,8 @@ def via_office(a, by, office, who):
     for k in ("role", "effort", "model"):
         if a[k]:
             body[k] = a[k]
+    if TOOL == "claude" and not a["full"]:
+        body["lean"] = True
     status, r = http("POST", "/api/workers/ask", body)
     if status in (404, 503):
         raise NoOffice(r.get("error") or str(status))
@@ -509,6 +528,11 @@ def headless_claude(a, who):
         cmd += ["--effort", a["effort"]]
     if a["model"]:
         cmd += ["--model", a["model"]]
+    if not a["full"]:
+        cmd += ["--strict-mcp-config", "--disable-slash-commands",
+                "--append-system-prompt", WORKER_RULE.format(max=a["max"])]
+        if "--tools" not in a["extra"]:
+            cmd += ["--tools", LEAN_TOOLS]
     cmd += a["extra"]
     env = {k: v for k, v in os.environ.items() if k not in CLAUDE_SESSION_VARS + BOSS_VARS}
     env["PATH"] = f"{HOME}/.local/bin:" + env.get("PATH", "")
@@ -548,8 +572,11 @@ def headless_claude(a, who):
     usage = None
     if u:
         usage = {"input_tokens": u.get("input_tokens", 0), "output_tokens": u.get("output_tokens", 0),
-                 "cache_read_tokens": u.get("cache_read_input_tokens", 0)}
-        usage["total_tokens"] = usage["input_tokens"] + usage["output_tokens"] + usage["cache_read_tokens"] + u.get("cache_creation_input_tokens", 0)
+                 "cache_read_tokens": u.get("cache_read_input_tokens", 0),
+                 "cache_creation_tokens": u.get("cache_creation_input_tokens", 0)}
+        usage["total_tokens"] = sum(usage.values())
+        if r.get("total_cost_usd") is not None:
+            usage["cost_usd"] = r["total_cost_usd"]
     other = [ln for ln in (err or "").splitlines() if ln.strip()] or ([] if ok else [ln for ln in out.splitlines() if ln.strip()][-5:])
     finish(a, t0, "SUCCESS" if ok else (r.get("subtype") or "ERROR").upper(), r.get("result", ""), other,
            {"cid": r.get("session_id"), "turns": r.get("num_turns"), "usage": usage})
@@ -572,6 +599,8 @@ def main():
         die(f"no such directory {a['cwd']}")
     who = caller()
     by, office = check_team(a["worker"], who)
+    if TOOL == "claude" and who["claude_pid"] and same_account(a["worker"], who["claude_pid"]):
+        print(f"{CMD}: note: {a['worker']} is the account you run on: this saves your context, not your quota", file=sys.stderr)
     try:
         via_office(a, by, office, who)
     except NoOffice:
