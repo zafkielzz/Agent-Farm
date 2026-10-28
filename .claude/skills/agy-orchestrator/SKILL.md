@@ -14,12 +14,21 @@ A bare `agy` uses the machine's real account and can mix tokens. Always start wo
 For one self-contained job (read/summarize files, search, write a test from a spec) do NOT open a pane:
 ```bash
 agy-ask acc2 "<prompt>" --role <label> --mode <plan|accept-edits|default> --effort <low|medium|high> [--cwd DIR] [--max 2000] [--timeout 900]
-claude-ask .claude-work "<prompt>" --role <label> --mode <default|plan|accept-edits> --effort <low..max> [--model sonnet] [--cwd DIR] [--max 2000] [--timeout 900]
+claude-ask .claude-work "<prompt>" --role <label> --mode <default|plan|accept-edits> --effort <low..max> [--model sonnet] [--full] [--cwd DIR] [--max 2000] [--timeout 900]
 ```
 Both print only the worker's final answer (capped at `--max` chars). A Claude Code worker is named by its account
 (`.claude-work`, `claude:.claude-work` or `work`); it is far more expensive than an Antigravity one, so give it only what
 Flash cannot do well. Each call blocks until done (30s-3min): run it with `run_in_background`, several in parallel on
 different workers. Use panes (`agy-up`, below) only when the user asks for herdr.
+
+**When `claude-ask` pays off** (measured 28/10, see `docs/scripts.md`): it keeps the work out of your context (a job
+adds ~0.2-3k tokens to it: your command plus the answer, instead of every file the worker read), but a job costs its
+own ~8k tokens of start-up (lean) on the worker's account. So: delegate jobs that read a lot (summaries, sweeps across
+files) to **another account** than yours; do tiny lookups (one grep, one short file) yourself. A job given to the
+account you run on saves context, not quota (claude-ask prints a note). Claude workers start lean (no MCP, skills or
+slash commands; Bash, Read, Edit, Write, WebFetch, WebSearch only; told to answer compactly): pass `--full` only when the
+job needs the account's MCP servers, skills or other tools. Through the office the worker must trust `--cwd` (else
+the job fails in ~15 s saying so: ask the user to open claude there once).
 
 - **With the office running** (Habblaud), the job goes into the worker's own terminal as a fresh conversation and the
   command waits on the server: you spend nothing while waiting and get the final answer only. **Never read a worker's

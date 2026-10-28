@@ -56,6 +56,14 @@ install -m 755 bin/worker-ask ~/.local/bin/agy-ask && ln -sf agy-ask ~/.local/bi
   (`.claude-work`, `claude:.claude-work` hoặc `work`; id worker = `claude:.claude-work`). In ra **chỉ câu trả lời cuối**
   (`--max`, mặc định 2000 ký tự). Tùy chọn: `--mode plan|accept-edits|auto|default`, `--effort` (agy: low/medium/high;
   Claude: low…max), `--model` (agy chỉ Gemini 3.8 Flash), `--role`, `--cwd`, `--timeout`.
+- **Worker Claude khởi động gọn** (mặc định của `claude-ask`; `--full` để giữ nguyên cấu hình tài khoản): chạy ngầm thêm
+  `--strict-mcp-config --disable-slash-commands --tools Bash,Read,Edit,Write,WebFetch,WebSearch --append-system-prompt
+  "<luật worker: chỉ trả kết quả, gọn, dưới --max ký tự>"`; qua văn phòng body gửi `lean: true` và server thêm đúng các
+  cờ đó (`leanClaudeArgs` trong `server/workers/service.ts`). Đo 28/10 (Claude Code 2.1.312, Opus 5.5): ngữ cảnh lúc
+  khởi động chạy ngầm 23,7k → 7,9k token (Workflow ~8,2k, Agent ~2,3k, MCP Claude Docs ~1,7k, skill ~0,8k); việc thật
+  "tìm định nghĩa" chạy ngầm 47k → 17k token, qua văn phòng (terminal tương tác) 82k → 20k. Giao cho chính tài khoản
+  của mình thì CLI in ghi chú: tiết kiệm ngữ cảnh, không tiết kiệm quota. Log chạy ngầm có thêm
+  `cache_creation_tokens` và `cost_usd`.
 - **Qua văn phòng** (Habblaud ở `$HABBLAUD_URL`, mặc định `http://127.0.0.1:4747`): `POST /api/workers/ask` đưa việc vào
   terminal thường trực của worker (mỗi việc một hội thoại mới), rồi chờ `GET /api/workers/jobs/<id>?wait=60` (người
   gọi không tốn token khi chờ). SIGTERM/Ctrl-C khi đang chờ → `POST /api/workers/cancel {job}`; hết `--timeout` cũng hủy.
