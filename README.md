@@ -25,7 +25,7 @@ acc2-impl      acc3-qa        acc4-review     ...   mỗi worker = 1 profile ~/.
 | [docs/scripts.md](docs/scripts.md) | Mã nguồn `agy-as`, `agy-up`, `agy-mode`, `agy-sync`, `roles.conf`; cách dùng `agy-ask`/`claude-ask` (nguồn: `bin/worker-ask`) |
 | [.claude/skills/agy-orchestrator/SKILL.md](.claude/skills/agy-orchestrator/SKILL.md) | Skill cho Claude Code khi điều phối |
 | [worker-rules/GEMINI.md](worker-rules/GEMINI.md) | Luật tiết kiệm token cho worker agy |
-| [boss/AGENTS.md](boss/AGENTS.md) | Bàn làm việc của boss agy: agy mở trong `boss/` tự nạp file này (luật thư mục) và làm boss, giao việc bằng `agy-ask`/`claude-ask` |
+| [boss/AGENTS.md](boss/AGENTS.md) | Luật của boss agy: Habblaud mở boss trong thư mục office với `AGY_BOSS=1`, plugin [agy-plugin/agy-boss](agy-plugin/agy-boss) nạp file này (agy mở tay trong `boss/` cũng nạp, là luật thư mục); boss giao việc bằng `agy-ask`/`claude-ask` |
 | [CLAUDE.md](CLAUDE.md) | Chỉ dẫn vai trò orchestrator cho Claude Code |
 
 Yêu cầu: Linux, `herdr` (đã thử 0.9.5), `agy`, `dbus-daemon`, `gnome-keyring-daemon`, `python3`.

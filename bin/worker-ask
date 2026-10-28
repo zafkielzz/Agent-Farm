@@ -2,7 +2,7 @@
 """agy-ask <accN> "<prompt>" [--mode plan|accept-edits|auto|default] [--effort low|medium|high] [--role NAME] [--cwd DIR] [--max N] [--timeout SEC] [agy flags]
 claude-ask <account> "<prompt>" [--mode default|plan|accept-edits|auto] [--effort low|medium|high|xhigh|max] [--model M] [--role NAME] [--cwd DIR] [--max N] [--timeout SEC]
 agy-ask --wait-release <worker> [--timeout SEC]    wait until you hand the worker back (you took its wheel)
-agy-ask team                                       print the boss and the workers
+agy-ask team                                       print the offices: folder, boss, workers
 
 Gives one job to a worker and prints ONLY its final answer (capped at --max chars, default 2000). One source, two
 commands: installed as agy-ask (Antigravity workers, "acc2") and as the symlink claude-ask (Claude Code workers: the
@@ -16,10 +16,13 @@ event, kills the process group, deletes that call's conversation files) or claud
 saved). Headless calls log "start"/"end" lines to ~/.agy_profiles/agy-ask.log.jsonl (via "headless"); the office logs
 the jobs it runs.
 
-Team rule (~/.agy_profiles/team.json, edited in Habblaud; no file = no rule): with a boss appointed, only the boss may
-give jobs (a Claude boss: its PID is an ancestor of this call; an Antigravity boss: an ancestor `agy` runs with
-HOME=~/.agy_profiles/<boss acc>), never to the boss's own account, and only to registered workers. Jobs sent from the
-office (AGY_ASK_FROM_OFFICE=1, also usable by hand) skip the rule.
+Team rule (~/.agy_profiles/team.json v3, edited in Habblaud; no file = no rule): the file lists offices, each one team
+for one project folder ({"offices": [{"id", "name", "folder", "boss", "workers"}]}; a v2 file {boss, workers} is
+one office "main"). The boss of an office (a Claude boss: its PID is an ancestor of this call; an Antigravity boss:
+an ancestor `agy` runs with HOME=~/.agy_profiles/<boss acc>) gives jobs only to that office's workers, never to its
+own account, and the job carries the office id. A caller that is no office's boss is refused while any office has a
+boss; with no boss anywhere it may give jobs to any office's worker. Jobs sent from the office (AGY_ASK_FROM_OFFICE=1,
+with AGY_OFFICE=<id>; also usable by hand) skip the rule.
 
 Exit codes: 0 done; 1 failed, timeout or other error; 2 refused by the team rule; 3 BUSY or PAUSED: you are driving
 that worker (run `agy-ask --wait-release <worker>`, then ask again) or it is on another job (or pick another worker);
@@ -52,6 +55,8 @@ CLAUDE_SESSION_VARS = ("CLAUDECODE", "AI_AGENT", "CLAUDE_PID", "CLAUDE_EFFORT", 
                        "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_SESSION_ATTENDED", "CLAUDE_CODE_ENTRYPOINT",
                        "CLAUDE_CODE_EXECPATH", "CLAUDE_CODE_MESSAGING_SOCKET", "CLAUDE_CODE_MESSAGING_TOKEN",
                        "CLAUDE_CODE_SSE_PORT")
+# Set for an Antigravity boss (its terminal loads the boss rules): a worker started from the boss's shell must not get them.
+BOSS_VARS = ("AGY_BOSS", "AGY_OFFICE")
 
 
 def die(msg, code=FAIL):
@@ -164,22 +169,36 @@ def caller():
 
 
 def team():
-    """The team file ({"boss": {...}, "workers": [...]}), or None (no file: no rule)."""
+    """The team file, or None (no file: no rule). v3: {"offices": [{id, name, folder, boss, workers}]}; a v2 file
+    ({boss, workers}) reads as one office "main"."""
     try:
         with open(TEAM) as f:
             t = json.load(f)
-        return t if isinstance(t, dict) else None
     except (OSError, ValueError):
         return None
+    if not isinstance(t, dict):
+        return None
+    if not isinstance(t.get("offices"), list):
+        boss = t.get("boss") if isinstance(t.get("boss"), dict) else None
+        t = {"offices": [{"id": "main", "name": "Office", "folder": (boss or {}).get("cwd") or "",
+                          "boss": boss, "workers": t.get("workers")}]}
+    t["offices"] = [o for o in t["offices"] if isinstance(o, dict)]
+    return t
 
 
 def norm_worker(w):
     return w[4:] if isinstance(w, str) and w.startswith("agy:") else w
 
 
-def boss_of(t):
-    b = t.get("boss") if t else None
+def boss_of(office):
+    b = office.get("boss")
     return b if isinstance(b, dict) else None
+
+
+def workers_of(office):
+    """The office's workers, or None (no list: any worker)."""
+    w = office.get("workers")
+    return [norm_worker(x) for x in w] if isinstance(w, list) else None
 
 
 def boss_worker(boss):
@@ -196,24 +215,43 @@ def is_boss(boss, who):
     return bool(who["claude_pid"]) and who["claude_pid"] == boss.get("pid")
 
 
+def office_of_caller(t, who):
+    """The office whose boss made this call, or None."""
+    mine = [o for o in t["offices"] if boss_of(o) and is_boss(boss_of(o), who)]
+    hint = os.environ.get("AGY_OFFICE")  # set for an Antigravity boss opened from the office
+    return next((o for o in mine if o.get("id") == hint), mine[0] if mine else None)
+
+
+def office_label(o):
+    return f"{o.get('name') or o.get('id')} ({o.get('id')})"
+
+
 def check_team(worker, who):
-    """'you' (office), 'boss' or 'script'; refuses (exit 2) a job the team rule does not allow."""
+    """(by, office id or None): by = 'you' (office), 'boss' or 'script'; refuses (exit 2) a job the team rule does
+    not allow. The boss of an office gives jobs to that office's workers only."""
     if os.environ.get("AGY_ASK_FROM_OFFICE") == "1":
-        return "you"
+        return "you", os.environ.get("AGY_OFFICE") or None
     t = team()
-    boss = boss_of(t)
     if t is None:
-        return "boss" if who["pid"] else "script"
-    if boss:
-        if not is_boss(boss, who):
-            die(f"only the boss {boss.get('name') or boss.get('id') or '?'} may give jobs (appointed in Habblaud); this call is not from it", REFUSED)
+        return ("boss" if who["pid"] else "script"), None
+    office = office_of_caller(t, who)
+    if office:
+        boss = boss_of(office)
         if worker == boss_worker(boss):
             die(f"{worker} is the boss's own account", REFUSED)
-    workers = t.get("workers")
-    if isinstance(workers, list) and worker not in [norm_worker(w) for w in workers]:
-        listed = ", ".join(norm_worker(w) for w in workers) or "none"
+        workers = workers_of(office)
+        if workers is not None and worker not in workers:
+            die(f"{worker} is not a worker of your office {office_label(office)} (workers: {', '.join(workers) or 'none'}; add it in Habblaud)", REFUSED)
+        return "boss", office.get("id")
+    bosses = [boss_of(o) for o in t["offices"] if boss_of(o)]
+    if bosses:
+        names = ", ".join(b.get("name") or b.get("id") or "?" for b in bosses)
+        die(f"only a boss may give jobs (bosses: {names}, appointed in Habblaud); this call is not from one", REFUSED)
+    offices = [o for o in t["offices"] if workers_of(o) is None or worker in workers_of(o)]
+    if not offices:
+        listed = ", ".join(sorted({w for o in t["offices"] for w in workers_of(o) or []})) or "none"
         die(f"{worker} is not a registered worker (workers: {listed}; add it in Habblaud)", REFUSED)
-    return "boss" if boss or who["pid"] else "script"
+    return ("boss" if who["pid"] else "script"), offices[0].get("id")
 
 
 def print_team():
@@ -221,13 +259,23 @@ def print_team():
     if t is None:
         print("no team file: any caller may give jobs to any account")
         return
-    boss = boss_of(t)
-    if boss:
-        kind = "Antigravity" if boss.get("kind") == "agy" else "Claude Code"
-        print(f"boss: {boss.get('name') or boss.get('id')} ({kind}, account {boss_worker(boss)})")
-    else:
-        print("boss: none (anyone may give jobs)")
-    print(f"workers: {', '.join(norm_worker(w) for w in t.get('workers') or []) or 'none'}")
+    mine = office_of_caller(t, caller())
+    for o in t["offices"]:
+        you = "  <- you are its boss" if mine is o else ""
+        print(f"office {office_label(o)}: {o.get('folder') or 'no folder yet'}{you}")
+        boss = boss_of(o)
+        if boss:
+            kind = "Antigravity" if boss.get("kind") == "agy" else "Claude Code"
+            print(f"  boss: {boss.get('name') or boss.get('id')} ({kind}, account {boss_worker(boss)})")
+        else:
+            print("  boss: none")
+        w = workers_of(o)
+        print(f"  workers: {'any' if w is None else ', '.join(w) or 'none'}")
+    if not t["offices"]:
+        print("no offices")
+    elif not mine:
+        anyone = not any(boss_of(o) for o in t["offices"])
+        print("you: not a boss" + (" (no office has a boss: anyone may give jobs to the offices' workers)" if anyone else ""))
 
 
 # ------------------------------------------------------------------ the office (Habblaud)
@@ -263,12 +311,14 @@ def busy_help(worker, message, reason="driving"):
     sys.exit(BUSY)
 
 
-def via_office(a, by, who):
+def via_office(a, by, office, who):
     """Runs the job in the worker's terminal and waits for its answer; NoOffice to fall back to headless."""
     # The office takes the agy mode names (plan, accept-edits, auto, default), also for Claude Code workers.
     mode = {v: k for k, v in CLAUDE_MODES.items() if v}.get(a["mode"], a["mode"])
     body = {"worker": a["worker"], "prompt": a["prompt"], "cwd": a["cwd"], "max": a["max"], "by": by,
             "mode": mode, "callerPid": who["pid"]}
+    if office:
+        body["office"] = office
     for k in ("role", "effort", "model"):
         if a[k]:
             body[k] = a[k]
@@ -397,7 +447,8 @@ def headless_agy(a, who):
     if a["model"]:
         cmd += ["--model", a["model"]]
     cmd += a["extra"]
-    env = dict(os.environ, PATH=f"{HOME}/.local/bin:" + os.environ.get("PATH", ""))
+    env = {k: v for k, v in os.environ.items() if k not in BOSS_VARS}
+    env["PATH"] = f"{HOME}/.local/bin:" + env.get("PATH", "")
     t0 = time.time()
     log_start(a, who, t0)
     p = subprocess.Popen(cmd, cwd=a["cwd"], env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
@@ -459,7 +510,7 @@ def headless_claude(a, who):
     if a["model"]:
         cmd += ["--model", a["model"]]
     cmd += a["extra"]
-    env = {k: v for k, v in os.environ.items() if k not in CLAUDE_SESSION_VARS}
+    env = {k: v for k, v in os.environ.items() if k not in CLAUDE_SESSION_VARS + BOSS_VARS}
     env["PATH"] = f"{HOME}/.local/bin:" + env.get("PATH", "")
     if account == ".claude":
         env.pop("CLAUDE_CONFIG_DIR", None)
@@ -520,9 +571,9 @@ def main():
     if not os.path.isdir(a["cwd"]):
         die(f"no such directory {a['cwd']}")
     who = caller()
-    by = check_team(a["worker"], who)
+    by, office = check_team(a["worker"], who)
     try:
-        via_office(a, by, who)
+        via_office(a, by, office, who)
     except NoOffice:
         pass
     (headless_agy if TOOL == "agy" else headless_claude)(a, who)

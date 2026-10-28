@@ -14,6 +14,12 @@ acc="${1:?usage: agy-as <accN> [agy args...]}"; shift
 home="$HOME/.agy_profiles/$acc"
 [ -d "$home" ] || { echo "agy-as: no such profile $home" >&2; exit 1; }
 real_bin="$HOME/.local/bin"
+# An office's boss (AGY_BOSS=1, set by Habblaud): link the agy-boss plugin into the profile once; its SessionStart
+# hook loads the boss rules only when AGY_BOSS=1, so the link is harmless when the account works as a worker later.
+if [ "${AGY_BOSS:-}" = 1 ]; then
+  plug="$home/.gemini/config/plugins/agy-boss"
+  [ -e "$plug" ] || { mkdir -p "${plug%/*}" && ln -sfn "${AGY_HUB:-$HOME/Workspace/agy-hub}/agy-plugin/agy-boss" "$plug"; }
+fi
 
 for v in XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS DBUS_STARTER_ADDRESS DBUS_STARTER_BUS_TYPE \
          GNOME_KEYRING_CONTROL GNOME_KEYRING_PID SSH_AUTH_SOCK SSH_AGENT_PID GPG_AGENT_INFO SESSION_MANAGER; do
@@ -57,10 +63,17 @@ install -m 755 bin/worker-ask ~/.local/bin/agy-ask && ln -sf agy-ask ~/.local/bi
   sự kiện `result`, kill cả nhóm process, xóa file hội thoại) hoặc `claude -p --output-format json
   --no-session-persistence` (bỏ biến môi trường của phiên Claude đang gọi). Mỗi lần ghi dòng `start`/`end` (`via:
   "headless"`, `worker`, `acc` = id worker) vào `~/.agy_profiles/agy-ask.log.jsonl`; việc qua văn phòng thì server ghi.
-- **Luật đội** (`~/.agy_profiles/team.json`, chỉnh trong Habblaud; không có file = không có luật): đã phong boss thì chỉ
-  boss giao được (boss Claude: PID là tổ tiên của lời gọi; boss agy: có tổ tiên `agy` với
-  `HOME=~/.agy_profiles/<acc của boss>`), không giao cho chính tài khoản của boss, và chỉ cho worker đã đăng ký. Việc giao
-  từ văn phòng (`AGY_ASK_FROM_OFFICE=1`, gọi tay cũng dùng được) không bị chặn. `agy-ask team` in boss và worker.
+- **Luật đội** (`~/.agy_profiles/team.json` v3, chỉnh trong Habblaud; không có file = không có luật): file gồm các office,
+  mỗi office một đội cho một thư mục dự án (`{"offices": [{id, name, folder, boss, workers}]}`; file v2 `{boss, workers}`
+  đọc thành một office `main`). Boss của office (boss Claude: PID là tổ tiên của lời gọi; boss agy: có tổ tiên `agy` với
+  `HOME=~/.agy_profiles/<acc của boss>`) chỉ giao cho worker của office đó, không cho chính tài khoản của mình; body gửi
+  `office` (id). Không phải boss office nào: bị chặn nếu có office có boss; không office nào có boss thì giao được cho
+  worker thuộc ít nhất một office. Việc giao từ văn phòng (`AGY_ASK_FROM_OFFICE=1` + `AGY_OFFICE=<id>`, gọi tay cũng dùng
+  được) không bị chặn. `agy-ask team` in từng office (thư mục, boss, worker) và đánh dấu office mà người gọi làm boss.
+- **Boss agy** mở từ Habblaud chạy trong thư mục office với `AGY_BOSS=1`, `AGY_OFFICE=<id>`: `agy-as` liên kết plugin
+  [`agy-plugin/agy-boss`](../agy-plugin/agy-boss) vào hồ sơ (`.gemini/config/plugins/agy-boss`), hook `SessionStart` của
+  nó chèn `boss/AGENTS.md` + tên/thư mục office làm system message (không có `AGY_BOSS=1` thì không chèn gì). Worker chạy
+  ngầm từ shell của boss không nhận hai biến này.
 - **Mã thoát:** 0 xong; 1 lỗi/hết giờ; 2 luật đội chặn; 3 BUSY/PAUSED (người dùng đang cầm lái worker đó, hoặc nó đang
   làm việc khác: `agy-ask --wait-release <worker>` rồi gọi lại, hoặc chọn worker khác); 4 việc bị hủy từ văn phòng.
 - `agy-ask --wait-release <worker> [--timeout S]`: chờ tới khi người dùng trả lái (không có văn phòng thì về ngay).

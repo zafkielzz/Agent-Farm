@@ -39,13 +39,16 @@ different workers. Use panes (`agy-up`, below) only when the user asks for herdr
 | 3 | BUSY or PAUSED: the user is driving that worker, or it is on another job | `agy-ask --wait-release <worker>` (in the background) then ask again, or give the job to another worker |
 | 4 | the user cancelled the job from the office | do not resend it unasked; tell the user |
 
-### Team rule: only the boss gives jobs, only to workers
-The user picks the team in Habblaud (`~/.agy_profiles/team.json`). Run `agy-ask team` before delegating: it prints the
-boss and the registered workers (`acc2`, `claude:.claude-work`). When a boss is appointed (a Claude Code session or an
-Antigravity account), both commands refuse (exit 2) a call that is not from the boss, a job for the boss's own
-account, and any account that is not a registered worker. If you are not the boss, do not delegate: do the work
-yourself or tell the user. Never call an account outside the worker list, and never get around the rule (do not set
-`AGY_ASK_FROM_OFFICE`: it is for jobs the user sends from the office). No team file = no rule.
+### Team rule: offices; only a boss gives jobs, only to its office's workers
+The user sets up **offices** in Habblaud (`~/.agy_profiles/team.json`): each office is one team for ONE project folder,
+with its own boss and workers (a worker may belong to several offices). Run `agy-ask team` before delegating: it prints
+every office (folder, boss, workers, e.g. `acc2`, `claude:.claude-work`) and marks the one you are the boss of
+(`<- you are its boss`). As the boss of an office you give jobs only to that office's workers, never to your own
+account; the job carries your office's id (the office shows it on that office's board). Both commands refuse (exit 2)
+anything else: a call from someone who is no office's boss (while any office has a boss), another office's worker, an
+account that is not a registered worker. If you are not a boss, do not delegate: do the work yourself or tell the user.
+Never get around the rule (do not set `AGY_ASK_FROM_OFFICE` or `AGY_OFFICE`: they are for jobs the user sends from the
+office). No team file = no rule; no boss in any office = anyone may give jobs to the offices' workers.
 
 ### Choosing mode and effort (you decide, every call)
 The user does not pick these by hand: you choose them per job and always pass `--role`, `--mode` and `--effort` explicitly
