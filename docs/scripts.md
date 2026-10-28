@@ -49,13 +49,33 @@ exec agy "$@"
 Một nguồn Python cho hai lệnh: [`bin/worker-ask`](../bin/worker-ask) (cần `python3`). Cài:
 
 ```bash
-install -m 755 bin/worker-ask ~/.local/bin/agy-ask && ln -sf agy-ask ~/.local/bin/claude-ask
+install -m 755 bin/worker-ask ~/.local/bin/agy-ask && install -m 644 bin/office_rules.py ~/.local/bin/ \
+  && install -m 755 bin/rules-hook ~/.local/bin/ && ln -sf agy-ask ~/.local/bin/claude-ask
 ```
 
 - `agy-ask accN "<prompt>"` giao việc cho worker Antigravity, `claude-ask <tài khoản> "<prompt>"` cho worker Claude Code
   (`.claude-work`, `claude:.claude-work` hoặc `work`; id worker = `claude:.claude-work`). In ra **chỉ câu trả lời cuối**
   (`--max`, mặc định 2000 ký tự). Tùy chọn: `--mode plan|accept-edits|auto|default`, `--effort` (agy: low/medium/high;
   Claude: low…max), `--model` (agy chỉ Gemini 3.8 Flash), `--role`, `--cwd`, `--timeout`.
+- **Nội quy office** ([`bin/office_rules.py`](../bin/office_rules.py), bản Python của `shared/rules.ts` trong Habblaud;
+  `tests/rules.vectors.json` là bản chép `shared/rules.vectors.json`, cả hai bộ test chạy cùng các ca, đổi bên nào thì
+  chép lại): đọc `rules` của office trong `team.json` (không có = mặc định). Mỗi việc giao: chèn `rulesText(...,
+  'workers')` lên đầu prompt (Board của Habblaud chỉ hiện phần việc); từ chối (mã 2, một dòng `RuleViolation` `by:"ask"`
+  trong `~/.agy_profiles/rules-log.jsonl`) khi `--cwd` ngoài phạm vi ghi (`cwd`), office đã chạy đủ `limits.maxJobs`
+  việc (`jobs`, đếm từ log: dòng start chưa có end, < 30 phút; việc chạy ngầm thì PID còn sống), worker dùng ≥
+  `limits.quotaStop` % (`quota`; lấy từ snapshot của Habblaud, không có thì file usage của tài khoản Claude, không biết
+  thì cho qua). Lệnh: `agy-ask rules [--office X] [--who boss|workers]`, `agy-ask rules check <path> [--write]` /
+  `--cmd "..."` (mã 0 được, 2 bị chặn), `agy-ask rules propose "<luật>" --why "..." [--for workers|boss|all]` (gửi
+  `POST /api/team {office, propose}`; văn phòng không chạy thì báo lỗi rõ).
+- **`bin/rules-hook`**: hook PreToolUse. Worker Claude của `claude-ask` (chạy ngầm, và việc qua văn phòng có office)
+  nhận nó qua `--settings` + `AGY_OFFICE`/`AGY_WORKER`; boss Claude nhận qua mod `habblaud` (Habblaud, `rules-hook
+  boss` + kiểm từng tool call). Edit/Write/MultiEdit/NotebookEdit → `checkPath(write)`, Read/Grep/Glob → `read`, Bash →
+  `checkCommand`; không ai được sửa `team.json`/`rules-log.jsonl` (cả lệnh Bash nhắc tên và ghi, cố gắng tối đa). Chặn =
+  JSON deny theo tài liệu + một dòng log `by:"hook"`; lỗi bất kỳ = cho qua (stderr). ~20 ms. Cũng hiểu sự kiện
+  PreToolUse của agy (`{"toolCall": {name, args}}` → `{"decision": "deny", "reason"}`); plugin
+  [`agy-plugin/office-rules`](../agy-plugin/office-rules) **chưa cài** vào hồ sơ agy (cần người dùng đồng ý, như
+  agy-boss): `ln -s ~/Workspace/agy-hub/agy-plugin/office-rules ~/.agy_profiles/accN/.gemini/config/plugins/`.
+  Đây là rào chắn chống nhầm lẫn, không phải sandbox (cùng user Unix).
 - **Worker Claude khởi động gọn** (mặc định của `claude-ask`; `--full` để giữ nguyên cấu hình tài khoản): chạy ngầm thêm
   `--strict-mcp-config --disable-slash-commands --tools Bash,Read,Edit,Write,WebFetch,WebSearch --append-system-prompt
   "<luật worker: chỉ trả kết quả, gọn, dưới --max ký tự>"`; qua văn phòng body gửi `lean: true` và server thêm đúng các

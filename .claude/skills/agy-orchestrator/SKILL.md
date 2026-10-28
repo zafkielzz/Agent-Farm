@@ -44,7 +44,7 @@ the job fails in ~15 s saying so: ask the user to open claude there once).
 | --- | --- | --- |
 | 0 | done, answer printed | check it, use it |
 | 1 | failed / timeout / error (message on stderr) | read the message; retry once or do it yourself |
-| 2 | refused by the team rule | do not retry, do not work around it (below) |
+| 2 | refused by the team rule, or by the office rules ("office rules of …": folder, job limit, quota) | do not retry, do not work around it (below; office rules: skill `office-rules`) |
 | 3 | BUSY or PAUSED: the user is driving that worker, or it is on another job | `agy-ask --wait-release <worker>` (in the background) then ask again, or give the job to another worker |
 | 4 | the user cancelled the job from the office | do not resend it unasked; tell the user |
 
