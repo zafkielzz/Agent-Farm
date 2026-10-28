@@ -3,6 +3,9 @@
 claude-ask <account> "<prompt>" [--mode default|plan|accept-edits|auto] [--effort low|medium|high|xhigh|max] [--model M] [--full] [--role NAME] [--cwd DIR] [--max N] [--timeout SEC]
 agy-ask --wait-release <worker> [--timeout SEC]    wait until you hand the worker back (you took its wheel)
 agy-ask team                                       print the offices: folder, boss, workers
+agy-ask rules [--office X] [--who boss|workers]    print an office's rules as its agents read them
+agy-ask rules check <path> [--write] | --cmd "..." [--office X]   would the rules allow it (exit 0) or not (exit 2)
+agy-ask rules propose "<rule>" --why "<reason>" [--for workers|boss|all] [--office X]   suggest a rule (the user decides)
 
 Gives one job to a worker and prints ONLY its final answer (capped at --max chars, default 2000). One source, two
 commands: installed as agy-ask (Antigravity workers, "acc2") and as the symlink claude-ask (Claude Code workers: the
@@ -29,6 +32,12 @@ Claude Code workers start lean unless --full: no MCP servers, no skills or slash
 plus a short worker rule (answer only, compact, under --max chars). Through the office the job says "lean" and the
 office adds the same. Giving a job to the account you run on saves your context, not your quota (a note says so).
 
+Office rules (the office's `rules` in team.json, edited in Habblaud; absent = the defaults; bin/office_rules.py): every
+job starts with the rules for the workers, and a job is refused (exit 2, one line in rules-log.jsonl) when --cwd is
+outside the office's write scope ("cwd"), when the office already runs limits.maxJobs jobs ("jobs"), or when the
+worker's 5-hour or weekly use is at limits.quotaStop % or more ("quota"; unknown use = allowed). Claude Code workers
+also run bin/rules-hook (PreToolUse, given with --settings), which blocks an edit, read or command against the scope.
+
 Exit codes: 0 done; 1 failed, timeout or other error; 2 refused by the team rule; 3 BUSY or PAUSED: you are driving
 that worker (run `agy-ask --wait-release <worker>`, then ask again) or it is on another job (or pick another worker);
 4 the job was cancelled (from the office).
@@ -39,9 +48,15 @@ low, medium, high. Without --mode / --effort a call uses the worker's defaults i
 """
 import glob, json, os, signal, subprocess, sys, threading, time, urllib.error, urllib.parse, urllib.request
 
-HOME = os.path.expanduser("~")
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import office_rules as R  # noqa: E402  (installed next to this script)
+
+HOME = R.HOME  # the real home, also when called from an Antigravity boss (HOME = its profile)
 ROOT = os.environ.get("HABBLAUD_AGY_PROFILES") or f"{HOME}/.agy_profiles"
 LOG = f"{ROOT}/agy-ask.log.jsonl"
+USAGE_DIR = (os.environ.get("HABBLAUD_USAGE_DIR") or "~/.habblaud/usage").replace("~", HOME, 1)
+RULES_HOOK = os.path.join(os.path.dirname(os.path.realpath(__file__)), "rules-hook")
+JOB_MAX_S = 30 * 60  # a job still "running" in the log after this long is not counted (the office stops it by then)
 DEFAULTS = f"{ROOT}/defaults.json"
 TEAM = f"{ROOT}/team.json"
 URL = (os.environ.get("HABBLAUD_URL") or "http://127.0.0.1:4747").rstrip("/")
@@ -96,7 +111,7 @@ def flag(extra, name):
 def parse(argv):
     if len(argv) < 2:
         die(f"usage: {USAGE}")
-    a = {"worker": worker_id(argv[0]), "prompt": argv[1], "mode": "", "role": "", "effort": "", "model": "",
+    a = {"worker": worker_id(argv[0]), "prompt": argv[1], "task": argv[1], "mode": "", "role": "", "effort": "", "model": "",
          "max": 2000, "cwd": os.getcwd(), "timeout": 900, "full": False, "extra": []}
     rest = argv[2:]
     while rest:
@@ -295,6 +310,182 @@ def print_team():
         print("you: not a boss" + (" (no office has a boss: anyone may give jobs to the offices' workers)" if anyone else ""))
 
 
+# ------------------------------------------------------------------ office rules
+
+def pick_office(oid, who):
+    """The office named by --office, else the one the caller is the boss of, else $AGY_OFFICE, else the only one."""
+    offs = R.offices()
+    names = ", ".join(str(o.get("id")) for o in offs) or "none"
+    if oid:
+        o = next((o for o in offs if o.get("id") == oid), None)
+        if not o:
+            die(f"no office {oid!r} (offices: {names})")
+        return o
+    t = team()
+    o = (office_of_caller(t, who) if t else None) or R.office_by_id(os.environ.get("AGY_OFFICE") or "") \
+        or (offs[0] if len(offs) == 1 else None)
+    if not o:
+        die(f"which office? pass --office <id> (offices: {names})")
+    return o
+
+
+def rules_cmd(argv):
+    """agy-ask rules [check|propose] ...: print, check or propose office rules."""
+    opts, pos = {"--office": "", "--who": "", "--cmd": None, "--why": "", "--for": "workers"}, []
+    write = False
+    while argv:
+        k = argv.pop(0)
+        if k == "--write":
+            write = True
+        elif k in opts:
+            if not argv:
+                die(f"{k} needs a value")
+            opts[k] = argv.pop(0)
+        else:
+            pos.append(k)
+    who = caller()
+    o = pick_office(opts["--office"], who)
+    rules, folder = R.office_rules(o), o.get("folder") or ""
+    boss = boss_of(o)
+    is_boss_call = bool(boss and is_boss(boss, who))
+    sub = pos.pop(0) if pos else ""
+    if sub == "":
+        side = opts["--who"] or ("boss" if is_boss_call else "workers")
+        if side not in ("boss", "workers"):
+            die("--who must be boss or workers")
+        print(R.rules_text(o, rules, side))
+        return
+    if sub == "check":
+        if opts["--cmd"] is not None:
+            hit = R.check_command(rules, opts["--cmd"])
+            print(f"refused: command (rule: {hit})" if hit else "allowed")
+            sys.exit(REFUSED if hit else OK)
+        if not pos:
+            die('usage: agy-ask rules check <path> [--write] | --cmd "..."')
+        c = R.check_path(rules, folder, HOME, pos[0], "write" if write else "read", cwd=os.getcwd())
+        print("allowed" if c["ok"] else f"refused: {c['kind']} (rule: {c['rule']})")
+        sys.exit(OK if c["ok"] else REFUSED)
+    if sub == "propose":
+        if not pos or not pos[0].strip():
+            die('usage: agy-ask rules propose "<rule>" --why "<reason>"')
+        if opts["--for"] not in R.FOR:
+            die("--for must be workers, boss or all")
+        prop = {"text": pos[0], "for": opts["--for"], "by": (boss or {}).get("name") or "boss" if is_boss_call else "boss"}
+        if opts["--why"]:
+            prop["why"] = opts["--why"]
+        try:
+            status, r = http("POST", "/api/team", {"office": o.get("id"), "propose": prop})
+        except NoOffice:
+            die("the office is not running: a proposal goes through Habblaud (only it writes team.json); start it and try again")
+        if status != 200:
+            die(r.get("error") or f"the office answered {status} (an older Habblaud without office rules?)")
+        print(f"proposed to the user in office {office_label(o)}: {R._line(prop['text'])} (they accept or reject it in Habblaud)")
+        return
+    die(f"unknown: rules {sub} (rules | rules check | rules propose)")
+
+
+def running_jobs(oid):
+    """Jobs of the office still running according to the log: start lines without their end (office jobs by job id,
+    headless ones by PID, alive), started less than JOB_MAX_S ago."""
+    try:
+        with open(LOG, "rb") as f:
+            f.seek(0, 2)
+            f.seek(max(0, f.tell() - 512 * 1024))
+            lines = f.read().decode(errors="replace").splitlines()
+    except OSError:
+        return 0
+    live, now = {}, time.time()
+    for ln in lines:
+        try:
+            j = json.loads(ln)
+        except ValueError:
+            continue
+        if not isinstance(j, dict):
+            continue
+        key = ("job", j["job"]) if j.get("via") == "terminal" and j.get("job") else ("pid", j.get("pid"))
+        if j.get("event") == "start" and j.get("office") == oid:
+            live[key] = j
+        elif j.get("event") == "end":
+            live.pop(key, None)
+
+    def running(j):
+        if now - (j.get("ts") or 0) > JOB_MAX_S:
+            return False
+        if j.get("via") == "terminal":
+            return True
+        try:
+            os.kill(int(j.get("pid") or 0), 0)
+            return True
+        except (OSError, ValueError):
+            return False
+    return sum(1 for j in live.values() if running(j))
+
+
+def usage_of(worker):
+    """The worker's highest use (5-hour or weekly, %) as Habblaud knows it, or None (unknown)."""
+    account = worker if worker.startswith("claude:") else f"agy:{worker}"
+    account = account[len("claude:"):] if account.startswith("claude:") else account
+    try:
+        status, snap = http("GET", "/api/snapshot", timeout=3)
+        if status == 200:
+            for acc in snap.get("accounts") or []:
+                if isinstance(acc, dict) and acc.get("id") == account:
+                    u = acc.get("usage") or {}
+                    vals = [w.get("utilization") for w in (u.get("fiveHour"), u.get("sevenDay")) if isinstance(w, dict)]
+                    vals = [v for v in vals if isinstance(v, (int, float))]
+                    return max(vals) if vals else None
+            return None
+    except NoOffice:
+        pass
+    if not worker.startswith("claude:"):
+        return None
+    try:  # no office: the usage file the Habblaud mod writes for a Claude account
+        with open(f"{USAGE_DIR}/{account}.json") as f:
+            u = json.load(f)
+        if time.time() * 1000 - (u.get("fetchedAt") or 0) > 6 * 3600 * 1000:
+            return None
+        vals = [w.get("utilization") for w in (u.get("five_hour"), u.get("seven_day")) if isinstance(w, dict)]
+        vals = [v for v in vals if isinstance(v, (int, float))]
+        return max(vals) if vals else None
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+def refuse(o, a, kind, detail, msg):
+    R.violation(o.get("id"), a["worker"], kind, detail, "ask")
+    die(f"office rules of {office_label(o)}: {msg}", REFUSED)
+
+
+def apply_rules(a, oid):
+    """Refuses a job the office's rules do not allow; puts the rules for the workers on top of the prompt."""
+    o = R.office_by_id(oid) if oid else None
+    if not o:
+        return
+    rules, folder = R.office_rules(o), o.get("folder") or ""
+    c = R.check_path(rules, folder, HOME, a["cwd"], "write")
+    if not c["ok"]:
+        why = f"it is in {c['rule']}, which may not be read or edited" if c["kind"] == "deny" else f"edits are allowed only inside {', '.join([folder, *rules['scope']['write']])}"
+        refuse(o, a, "cwd", a["cwd"], f"--cwd {a['cwd']} is refused: {why}")
+    most = rules["limits"].get("maxJobs")
+    if most:
+        n = running_jobs(o.get("id"))
+        if n >= most:
+            refuse(o, a, "jobs", f"{n} jobs running", f"the office already runs {n} job(s) (limit {most}): ask again when one is over")
+    stop = rules["limits"].get("quotaStop")
+    if stop:
+        used = usage_of(a["worker"])
+        if used is not None and used >= stop:
+            refuse(o, a, "quota", f"{a['worker']} at {used}%", f"{a['worker']} has used {used}% of its quota (limit {stop}%): give the job to another worker")
+    a["prompt"] = R.rules_text(o, rules, "workers") + "\n\n" + a["prompt"]
+    a["rules_office"] = o.get("id")
+
+
+def hook_settings():
+    """--settings for a Claude Code worker: bin/rules-hook on the tools it checks."""
+    return json.dumps({"hooks": {"PreToolUse": [{"matcher": "Edit|Write|MultiEdit|NotebookEdit|Read|Grep|Glob|Bash",
+                                                 "hooks": [{"type": "command", "command": RULES_HOOK, "timeout": 10}]}]}})
+
+
 # ------------------------------------------------------------------ the office (Habblaud)
 
 class NoOffice(Exception):
@@ -433,7 +624,7 @@ def log_start(a, who, t0):
     acc = a["worker"]
     log({"event": "start", "ts": t0, "acc": acc, "worker": acc, "via": "headless", "pid": os.getpid(), "mode": a["mode"],
          "role": a["role"], "model": a["model"], "effort": a["effort"], "claude_pid": who["claude_pid"],
-         "cwd": a["cwd"], "prompt": a["prompt"][:200]})
+         "cwd": a["cwd"], "prompt": a["task"][:200], **({"office": a["office"]} if a.get("office") else {})})
 
 
 def log_end(a, t0, **fields):
@@ -468,6 +659,8 @@ def headless_agy(a, who):
     cmd += a["extra"]
     env = {k: v for k, v in os.environ.items() if k not in BOSS_VARS}
     env["PATH"] = f"{HOME}/.local/bin:" + env.get("PATH", "")
+    if a.get("rules_office"):  # for agy-plugin/office-rules (rules-hook), when it is installed in the profile
+        env.update(AGY_OFFICE=a["rules_office"], AGY_WORKER=acc)
     t0 = time.time()
     log_start(a, who, t0)
     p = subprocess.Popen(cmd, cwd=a["cwd"], env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
@@ -528,6 +721,8 @@ def headless_claude(a, who):
         cmd += ["--effort", a["effort"]]
     if a["model"]:
         cmd += ["--model", a["model"]]
+    if a.get("rules_office") and os.path.exists(RULES_HOOK):
+        cmd += ["--settings", hook_settings()]
     if not a["full"]:
         cmd += ["--strict-mcp-config", "--disable-slash-commands",
                 "--append-system-prompt", WORKER_RULE.format(max=a["max"])]
@@ -536,6 +731,8 @@ def headless_claude(a, who):
     cmd += a["extra"]
     env = {k: v for k, v in os.environ.items() if k not in CLAUDE_SESSION_VARS + BOSS_VARS}
     env["PATH"] = f"{HOME}/.local/bin:" + env.get("PATH", "")
+    if a.get("rules_office"):  # rules-hook finds the office and who it is from these
+        env.update(AGY_OFFICE=a["rules_office"], AGY_WORKER=a["worker"])
     if account == ".claude":
         env.pop("CLAUDE_CONFIG_DIR", None)
     else:
@@ -588,6 +785,8 @@ def main():
     argv = sys.argv[1:]
     if argv == ["team"]:
         return print_team()
+    if argv[:1] == ["rules"]:
+        return rules_cmd(argv[1:])
     if argv[:1] == ["--wait-release"]:
         if len(argv) < 2:
             die("usage: agy-ask --wait-release <worker> [--timeout SEC]")
@@ -599,6 +798,8 @@ def main():
         die(f"no such directory {a['cwd']}")
     who = caller()
     by, office = check_team(a["worker"], who)
+    a["office"] = office
+    apply_rules(a, office)
     if TOOL == "claude" and who["claude_pid"] and same_account(a["worker"], who["claude_pid"]):
         print(f"{CMD}: note: {a['worker']} is the account you run on: this saves your context, not your quota", file=sys.stderr)
     try:
