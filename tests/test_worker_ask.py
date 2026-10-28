@@ -334,9 +334,17 @@ class TeamRule(unittest.TestCase):
         self.assertEqual(self.run_ask(["rules", "--office", "nope"], team=team)[0], 1)
 
     def test_rules_propose_goes_to_the_office(self):
-        code, out, err = self.run_ask(["rules", "propose", "Run the tests before done", "--why", "two broken builds"], team=self.ruled(None))
+        code, out, err = self.run_ask(["rules", "propose", "Run the tests before done", "--why", "two broken builds"], team=self.ruled(None),
+                                      env={"AGY_ASK_FROM_OFFICE": "1", "AGY_OFFICE": "o1"})
         self.assertEqual(code, 0, err)
-        self.assertEqual(Office.bodies[-1], {"office": "o1", "propose": {"text": "Run the tests before done", "for": "workers", "by": "boss", "why": "two broken builds"}})
+        self.assertEqual(Office.bodies[-1], {"office": "o1", "propose": {"text": "Run the tests before done", "for": "workers", "by": "you", "why": "two broken builds"}})
+        # an agent that is not the office's boss: "script"; the boss: its name
+        team = self.ruled(None)
+        team["offices"][0]["boss"] = self.claude_boss("Renata")
+        self.run_ask(["rules", "propose", "x"], via="claude", team=self.ruled(None))
+        self.assertEqual(Office.bodies[-1]["propose"]["by"], "script")
+        self.run_ask_raw(["rules", "propose", "y"], "claude", json.dumps(team).replace('"__PID__"', "__PID__"), None, "agy-ask")
+        self.assertEqual(Office.bodies[-1]["propose"]["by"], "Renata")
         code, _, err = self.run_ask(["rules", "propose", "x"], team=self.ruled(None), env={"HABBLAUD_URL": "http://127.0.0.1:9"})
         self.assertEqual(code, 1)
         self.assertIn("the office is not running", err)

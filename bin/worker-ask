@@ -370,7 +370,14 @@ def rules_cmd(argv):
             die('usage: agy-ask rules propose "<rule>" --why "<reason>"')
         if opts["--for"] not in R.FOR:
             die("--for must be workers, boss or all")
-        prop = {"text": pos[0], "for": opts["--for"], "by": (boss or {}).get("name") or "boss" if is_boss_call else "boss"}
+        # Who really proposes: the boss by name; you (from the office, or a shell with no agent above it); else a script.
+        if is_boss_call:
+            by = (boss or {}).get("name") or "boss"
+        elif os.environ.get("AGY_ASK_FROM_OFFICE") == "1" or not who["pid"]:
+            by = "you"
+        else:
+            by = "script"
+        prop = {"text": pos[0], "for": opts["--for"], "by": by}
         if opts["--why"]:
             prop["why"] = opts["--why"]
         try:
