@@ -1,5 +1,7 @@
 # Agent Farm
 
+> **Đã chuyển nhà:** script, plugin và skill giờ nằm trong [Vi-Habblaud](https://github.com/zafkielzz/Vi-Habblaud) (`tools/agy`, cài bằng `tools/agy/install.sh`). Repo này chỉ còn để tra cứu lịch sử và tài liệu Herdr.
+
 Cách dùng **Herdr** để một agent giám sát (Claude Code) điều phối nhiều worker **Antigravity CLI (`agy`)**, mỗi worker một tài khoản Google cô lập.
 Repo này chỉ chứa tài liệu và skill, không có ứng dụng. Phiên bản web hub cũ đã bỏ (xem lịch sử git nếu cần).
 
