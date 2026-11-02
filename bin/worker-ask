@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """agy-ask <accN> "<prompt>" [--mode plan|accept-edits|auto|default] [--effort low|medium|high] [--role NAME] [--cwd DIR] [--max N] [--timeout SEC] [agy flags]
 claude-ask <account> "<prompt>" [--mode default|plan|accept-edits|auto] [--effort low|medium|high|xhigh|max] [--model M] [--full] [--role NAME] [--cwd DIR] [--max N] [--timeout SEC]
-agy-ask --wait-release <worker> [--timeout SEC]    wait until you hand the worker back (you took its wheel)
 agy-ask team                                       print the offices: folder, boss, workers
 agy-ask rules [--office X] [--who boss|workers]    print an office's rules as its agents read them
 agy-ask rules check <path> [--write] | --cmd "..." [--office X]   would the rules allow it (exit 0) or not (exit 2)
@@ -38,9 +37,8 @@ outside the office's write scope ("cwd"), when the office already runs limits.ma
 worker's 5-hour or weekly use is at limits.quotaStop % or more ("quota"; unknown use = allowed). Claude Code workers
 also run bin/rules-hook (PreToolUse, given with --settings), which blocks an edit, read or command against the scope.
 
-Exit codes: 0 done; 1 failed, timeout or other error; 2 refused by the team rule; 3 BUSY or PAUSED: you are driving
-that worker (run `agy-ask --wait-release <worker>`, then ask again) or it is on another job (or pick another worker);
-4 the job was cancelled (from the office).
+Exit codes: 0 done; 1 failed, timeout or other error; 2 refused by the team rule; 3 BUSY: the worker is on another
+job (ask again when it is over, or pick another worker); 4 the job was cancelled (from the office).
 
 Antigravity workers only run Gemini 3.8 Flash: --model accepts only gemini-3.8-flash[-low|-medium|-high], --effort only
 low, medium, high. Without --mode / --effort a call uses the worker's defaults in ~/.agy_profiles/defaults.json
@@ -517,12 +515,9 @@ def http(method, path, body=None, timeout=10):
         raise NoOffice(str(e))
 
 
-def busy_help(worker, message, reason="driving"):
+def busy_help(worker, message):
     print(f"{CMD}: {worker} is busy: {message}", file=sys.stderr)
-    if reason == "job":
-        print(f"{CMD}: it is on another job: ask again when that one is over, or give the job to another worker", file=sys.stderr)
-    else:
-        print(f"{CMD}: the user is driving it: run `agy-ask --wait-release {worker}` and ask again, or give the job to another worker", file=sys.stderr)
+    print(f"{CMD}: it is on another job: ask again when that one is over, or give the job to another worker", file=sys.stderr)
     sys.exit(BUSY)
 
 
@@ -543,7 +538,7 @@ def via_office(a, by, office, who):
     if status in (404, 503):
         raise NoOffice(r.get("error") or str(status))
     if status == 409:
-        busy_help(a["worker"], r.get("message") or r.get("error") or "BUSY", r.get("reason") or "driving")
+        busy_help(a["worker"], r.get("message") or r.get("error") or "BUSY")
     if status == 403:
         die(r.get("error") or "refused by the office", REFUSED)
     if status >= 300 or not isinstance(r.get("job"), dict):
@@ -587,34 +582,9 @@ def via_office(a, by, office, who):
         out = (job.get("answer") or "").rstrip("\n")
         print(out if len(out) <= a["max"] else f"{out[:a['max']]}\n[... cut at {a['max']} chars]")
         sys.exit(OK)
-    if st == "paused":
-        busy_help(a["worker"], "you took the wheel; the job is paused")
     if st == "cancelled":
         die(f"job {job['id']} on {a['worker']} was cancelled from the office", CANCELLED)
     die(f"{a['worker']} {st or 'ERROR'} after {round(time.time() - t0)}s: {job.get('error') or ''}".rstrip(": "))
-
-
-def wait_release(worker, timeout):
-    """Waits until nobody drives the worker (exit 0); no office = nothing to wait for."""
-    deadline = time.time() + timeout
-    while True:
-        left = deadline - time.time()
-        if left <= 0:
-            die(f"{worker} is still driven by you after {timeout}s")
-        try:
-            status, r = http("GET", f"/api/workers/state?worker={urllib.parse.quote(worker)}&wait={max(1, min(60, int(left)))}",
-                             timeout=min(60, left) + 15)
-        except NoOffice:
-            print(f"{worker}: the office is not running; nothing to wait for")
-            return
-        if status in (404, 503):
-            print(f"{worker}: the office has no worker terminals; nothing to wait for")
-            return
-        if status != 200:
-            die(r.get("error") or f"the office answered {status}")
-        if not r.get("driving"):
-            print(f"{worker} is free" if not r.get("busy") else f"{worker} is back (still finishing a job)")
-            return
 
 
 # ------------------------------------------------------------------ headless (no office)
@@ -794,12 +764,6 @@ def main():
         return print_team()
     if argv[:1] == ["rules"]:
         return rules_cmd(argv[1:])
-    if argv[:1] == ["--wait-release"]:
-        if len(argv) < 2:
-            die("usage: agy-ask --wait-release <worker> [--timeout SEC]")
-        timeout = int(flag(argv, "--timeout") or 3600)
-        name = argv[1]
-        return wait_release(name if name.startswith(("claude:", "acc")) else "claude:" + name if name.startswith(".claude") else worker_id(name), timeout)
     a = parse(argv)
     if not os.path.isdir(a["cwd"]):
         die(f"no such directory {a['cwd']}")

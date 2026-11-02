@@ -37,11 +37,11 @@ claude-ask .claude-work "<prompt>" --role <label> --mode <default|plan|accept-ed
 | 0 | done | check the answer before you rely on it |
 | 1 | failed or timed out | read the message; retry once, or do it yourself |
 | 2 | refused by the team rule | stop: that account is not your office's worker (or you are not the boss any more) |
-| 3 | busy: the user is driving that worker, or it is on another job | `agy-ask --wait-release <worker>`, then ask again; or use another worker |
+| 3 | busy: the worker is on another job | ask again when it is over, or use another worker |
 | 4 | the user cancelled it | do not resend it unless the user asks |
 
 ## Never
-- Never read a worker's screen or type into its terminal: that is the user's seat.
+- Never read a worker's screen or type into its terminal: it is read-only.
 - Never run bare `agy` or `claude` to get work done: always `agy-ask` / `claude-ask`.
 - Never set `AGY_ASK_FROM_OFFICE` or change `AGY_OFFICE` (they are for jobs the user sends from the office), and never
   edit `~/.agy_profiles/team.json`.

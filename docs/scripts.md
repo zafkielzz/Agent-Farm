@@ -17,8 +17,9 @@ real_bin="$HOME/.local/bin"
 # An office's boss (AGY_BOSS=1, set by Habblaud): link the agy-boss plugin into the profile once; its SessionStart
 # hook loads the boss rules only when AGY_BOSS=1, so the link is harmless when the account works as a worker later.
 if [ "${AGY_BOSS:-}" = 1 ]; then
+  # agy skips a symlinked plugin folder: a real folder of links, so it is found and each script still resolves to the hub.
   plug="$home/.gemini/config/plugins/agy-boss"
-  [ -e "$plug" ] || { mkdir -p "${plug%/*}" && ln -sfn "${AGY_HUB:-$HOME/Workspace/agy-hub}/agy-plugin/agy-boss" "$plug"; }
+  [ -e "$plug/plugin.json" ] || { mkdir -p "$plug" && ln -sf "${AGY_HUB:-$HOME/Workspace/agy-hub}"/agy-plugin/agy-boss/* "$plug"/; }
 fi
 
 for v in XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS DBUS_STARTER_ADDRESS DBUS_STARTER_BUS_TYPE \
@@ -73,8 +74,9 @@ install -m 755 bin/worker-ask ~/.local/bin/agy-ask && install -m 644 bin/office_
   `checkCommand`; không ai được sửa `team.json`/`rules-log.jsonl` (cả lệnh Bash nhắc tên và ghi, cố gắng tối đa). Chặn =
   JSON deny theo tài liệu + một dòng log `by:"hook"`; lỗi bất kỳ = cho qua (stderr). ~20 ms. Cũng hiểu sự kiện
   PreToolUse của agy (`{"toolCall": {name, args}}` → `{"decision": "deny", "reason"}`); plugin
-  [`agy-plugin/office-rules`](../agy-plugin/office-rules) **chưa cài** vào hồ sơ agy (cần người dùng đồng ý, như
-  agy-boss): `ln -s ~/Workspace/agy-hub/agy-plugin/office-rules ~/.agy_profiles/accN/.gemini/config/plugins/`.
+  [`agy-plugin/office-rules`](../agy-plugin/office-rules) đã cài vào acc1/2/4/5/6 (2/11). agy bỏ qua thư mục plugin là
+  symlink và `agy plugin install` chép file (mất `office_rules.py`), nên phải là thư mục thật chứa link từng file:
+  `d=~/.agy_profiles/accN/.gemini/config/plugins/office-rules; mkdir -p $d; ln -s ~/Workspace/agy-hub/agy-plugin/office-rules/* $d/`.
   Đây là rào chắn chống nhầm lẫn, không phải sandbox (cùng user Unix).
 - **Worker Claude khởi động gọn** (mặc định của `claude-ask`; `--full` để giữ nguyên cấu hình tài khoản): chạy ngầm thêm
   `--strict-mcp-config --disable-slash-commands --tools Bash,Read,Edit,Write,WebFetch,WebSearch --append-system-prompt
@@ -85,7 +87,7 @@ install -m 755 bin/worker-ask ~/.local/bin/agy-ask && install -m 644 bin/office_
   của mình thì CLI in ghi chú: tiết kiệm ngữ cảnh, không tiết kiệm quota. Log chạy ngầm có thêm
   `cache_creation_tokens` và `cost_usd`.
 - **Qua văn phòng** (Habblaud ở `$HABBLAUD_URL`, mặc định `http://127.0.0.1:4747`): `POST /api/workers/ask` đưa việc vào
-  terminal thường trực của worker (mỗi việc một hội thoại mới), rồi chờ `GET /api/workers/jobs/<id>?wait=60` (người
+  terminal thường trực của worker (mỗi việc một hội thoại mới, terminal chỉ để xem), rồi chờ `GET /api/workers/jobs/<id>?wait=60` (người
   gọi không tốn token khi chờ). SIGTERM/Ctrl-C khi đang chờ → `POST /api/workers/cancel {job}`; hết `--timeout` cũng hủy.
 - **Chạy ngầm** khi văn phòng không chạy hoặc trả 404/503 (bản Habblaud cũ): agy `-p --output-format stream-json` (dừng ở
   sự kiện `result`, kill cả nhóm process, xóa file hội thoại) hoặc `claude -p --output-format json
@@ -102,9 +104,8 @@ install -m 755 bin/worker-ask ~/.local/bin/agy-ask && install -m 644 bin/office_
   [`agy-plugin/agy-boss`](../agy-plugin/agy-boss) vào hồ sơ (`.gemini/config/plugins/agy-boss`), hook `SessionStart` của
   nó chèn `boss/AGENTS.md` + tên/thư mục office làm system message (không có `AGY_BOSS=1` thì không chèn gì). Worker chạy
   ngầm từ shell của boss không nhận hai biến này.
-- **Mã thoát:** 0 xong; 1 lỗi/hết giờ; 2 luật đội chặn; 3 BUSY/PAUSED (người dùng đang cầm lái worker đó, hoặc nó đang
-  làm việc khác: `agy-ask --wait-release <worker>` rồi gọi lại, hoặc chọn worker khác); 4 việc bị hủy từ văn phòng.
-- `agy-ask --wait-release <worker> [--timeout S]`: chờ tới khi người dùng trả lái (không có văn phòng thì về ngay).
+- **Mã thoát:** 0 xong; 1 lỗi/hết giờ; 2 luật đội chặn; 3 BUSY (worker đang làm việc khác: gọi lại sau, hoặc chọn worker
+  khác); 4 việc bị hủy từ văn phòng.
 - Không có `--mode`/`--effort` thì dùng mặc định của worker trong `~/.agy_profiles/defaults.json` (chỉnh trong
   Habblaud), không có nữa thì agy `plan`, Claude `default`.
 

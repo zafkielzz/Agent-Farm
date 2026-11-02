@@ -32,7 +32,7 @@ the job fails in ~15 s saying so: ask the user to open claude there once).
 
 - **With the office running** (Habblaud), the job goes into the worker's own terminal as a fresh conversation and the
   command waits on the server: you spend nothing while waiting and get the final answer only. **Never read a worker's
-  screen or type into its terminal**: that is the user's seat (they can take the wheel at any time).
+  screen or type into its terminal**: it is read-only, and every job is a new conversation.
 - **Without the office** (not running, or an older Habblaud), the same command runs the job headless (`agy -p` /
   `claude -p`), as before. Same answer, same exit codes.
 - Killing the command (Bash timeout, TaskStop) cancels the job; `--timeout` (seconds) cancels it too and exits 1.
@@ -45,7 +45,7 @@ the job fails in ~15 s saying so: ask the user to open claude there once).
 | 0 | done, answer printed | check it, use it |
 | 1 | failed / timeout / error (message on stderr) | read the message; retry once or do it yourself |
 | 2 | refused by the team rule, or by the office rules ("office rules of …": folder, job limit, quota) | do not retry, do not work around it (below; office rules: skill `office-rules`) |
-| 3 | BUSY or PAUSED: the user is driving that worker, or it is on another job | `agy-ask --wait-release <worker>` (in the background) then ask again, or give the job to another worker |
+| 3 | BUSY: the worker is on another job | ask again when that job is over, or give the job to another worker |
 | 4 | the user cancelled the job from the office | do not resend it unasked; tell the user |
 
 ### Team rule: offices; only a boss gives jobs, only to its office's workers
