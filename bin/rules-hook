@@ -7,7 +7,8 @@ Habblaud mod.
                       "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": ...}}) and appends one
                       RuleViolation (by "hook") to rules-log.jsonl; otherwise prints nothing (the call goes on).
   rules-hook boss     {"office", "name", "rev", "text"} when the calling Claude Code session is the boss of an office
-                      (text = the rules for the boss), else {}. Used by the Habblaud mod (mod/habblaud).
+                      (text = the rules for the boss, plus a note when the folder has no HANDOFF*.md yet), else {}.
+                      Used by the Habblaud mod (mod/habblaud).
 
 Antigravity (agy) PreToolUse hooks use the same script (agy-plugin/office-rules): their event is {"toolCall": {"name",
 "args"}, "workspacePaths"} and a refusal is {"decision": "deny", "reason"}; a call it lets through gets {} (no
@@ -23,7 +24,7 @@ whose Claude boss is the nearest `claude` ancestor of this process. No office = 
 on stderr): the hook never breaks the session. These are guardrails against mistakes, not a sandbox: the agent runs as
 the same Unix user and a determined one can get around them.
 """
-import json, os, re, sys
+import glob, json, os, re, sys
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import office_rules as R  # noqa: E402
@@ -149,6 +150,17 @@ def decide(o, ev):
 AGY = [False]
 
 
+def note(folder):
+    """The note for a boss whose office folder exists and has no handoff file; '' otherwise."""
+    missing = folder and os.path.isdir(folder) and not glob.glob(os.path.join(glob.escape(folder), "[Hh][Aa][Nn][Dd][Oo][Ff][Ff]*.md"))
+    return NO_HANDOFF if missing else ""
+
+
+NO_HANDOFF = ("\n\nThis office's folder has no HANDOFF*.md yet. If the work starts from an idea file or a new idea, ask "
+              "the user first whether to go ahead with it. If yes, write HANDOFF.md from it (keep the idea file as it "
+              "is) with a \"Next steps\" list: that list is the office's to-do on the Board.")
+
+
 def main():
     if sys.argv[1:] == ["boss"]:
         o = boss_office()
@@ -157,7 +169,7 @@ def main():
             return
         rules = R.office_rules(o)
         print(json.dumps({"office": o.get("id"), "name": o.get("name") or o.get("id"), "rev": rules["rev"],
-                          "text": R.rules_text(o, rules, "boss")}))
+                          "text": R.rules_text(o, rules, "boss") + note(o.get("folder"))}))
         return
     ev = json.loads(sys.stdin.read() or "{}")
     ev = ev if isinstance(ev, dict) else {}

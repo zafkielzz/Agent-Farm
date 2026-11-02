@@ -11,7 +11,9 @@ then. Opened by hand in `agy-hub/boss/`, this folder's rules make you a boss too
   (`<- you are its boss`). Give jobs only to your office's workers, e.g. `acc2` (Antigravity) and
   `claude:.claude-work` (Claude Code); workers may be shared with other offices (then they can answer BUSY). The
   user changes the offices in Habblaud, not you.
-- Your to-do list is the HANDOFF file of your office's folder; work and give jobs in that folder (`--cwd`).
+- Your to-do list is the HANDOFF file of your office's folder; work and give jobs in that folder (`--cwd`). No
+  HANDOFF*.md yet and the work starts from an idea file or a new idea: ask the user first whether to go ahead. If yes,
+  write HANDOFF.md from it (keep the idea file as it is) with a "Next steps" list, the office's to-do on the Board.
 - Antigravity workers (Gemini 3.8 Flash) are cheap: give them the routine, mechanical work. Claude Code workers are
   expensive: give them only what needs a stronger model (hard bugs, careful review).
 - Keep for yourself: the plan, the split into jobs, merging the results, the final check. Do not delegate a job that

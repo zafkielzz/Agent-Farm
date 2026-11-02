@@ -506,6 +506,22 @@ class RulesHook(unittest.TestCase):
         self.assertEqual(subprocess.run([os.path.join(self.bin, "rules-hook"), "boss"], env=dict(os.environ, HABBLAUD_AGY_PROFILES=self.root),
                                         capture_output=True, text=True).stdout.strip(), "{}")
 
+    def test_boss_is_told_when_the_folder_has_no_handoff(self):
+        folder = tempfile.mkdtemp(dir=self.tmp)
+        office = dict(self.team["offices"][0], folder=folder, boss={"kind": "claude", "pid": "__PID__", "name": "Raul", "account": ".claude"})
+        template = json.dumps({"offices": [office]}).replace('"__PID__"', "__PID__")
+
+        def text():
+            out = subprocess.run([os.path.join(self.bin, "claude"), os.path.join(self.bin, "rules-hook"), "boss"],
+                                 env=dict({k: v for k, v in os.environ.items() if not k.startswith("AGY_")}, HABBLAUD_AGY_PROFILES=self.root, HOME="/home/u", TEAM_TEMPLATE=template),
+                                 capture_output=True, text=True, timeout=10).stdout
+            return json.loads(out)["text"]
+
+        self.assertIn("no HANDOFF*.md yet", text())
+        with open(os.path.join(folder, "handoff_v2.md"), "w") as f:
+            f.write("# Next steps\n")
+        self.assertNotIn("HANDOFF*.md", text())
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=1)
