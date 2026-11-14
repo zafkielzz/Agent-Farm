@@ -1,0 +1,620 @@
+#!/usr/bin/env python3
+"""Appoint a boss and manage the offices from the terminal (the Claude Code commands /boss, /workers, /quota, /offices
+and /office run this).
+
+  office-boss                      make the calling Claude Code session (or agy boss) the boss of the office for the
+                                   folder it works in: the office whose folder holds it (the deepest), else a new office
+                                   for that folder. Every time: every signed-in Antigravity worker (roles.conf "off" left
+                                   out) plus what /workers added by hand (Claude workers, clones), but not the
+                                   sessions of an account near its quota as last seen (benched).
+                                   In the home folder (no project): a "Terminal" office, no folder limit (cli, cli-2... one per running boss).
+  office-boss OFFICE               the boss of that office (its id or name)
+  office-boss off                  this session is no longer a boss, and its office closes
+  office-boss list                 the offices now, and the ended ones a resume would bring back
+  office-boss rm OFFICE|SESSION    close an office now (its boss stays a plain session), or forget an ended one
+  office-boss offices [rm X]       the same as list / rm (the command /offices)
+  office-boss quota                every worker's 5-hour and weekly use now (agy's /usage: no tokens); in a boss session,
+                                   workers near the quota leave its office and come back once it resets (the command /quota)
+  office-boss workers              this session's office's workers by account, each session with its state, and the
+                                   accounts that can be added or cloned (the command /workers)
+  office-boss workers add A…       accounts that are not in the office yet (acc3 or 3, claude:.claude-work or
+                                   .claude-work); one already there, or the boss's own, is refused: that is a clone
+  office-boss workers clone A [N]  N more sessions (1 by default) of an account already in the office, or of a Claude
+                                   boss's own account (claude = the default account ~/.claude): "acc3#2", "claude:.claude#2"
+  office-boss workers rm ID…|all   "acc3#2" = that one session; "acc3" = the account with all its sessions; all = everyone
+  office-boss help                 every command used in an office, one example each (the command /office)
+  office-boss --folder DIR         a new office for DIR instead of the current folder
+  office-boss --workers acc2,acc4  only these workers (a new office; an existing office keeps its own list otherwise)
+  office-boss --name NAME          the boss's name in the office (default: "Boss")
+
+An office lives as long as its boss's session (office_rules.tidy): when the session ends, the office leaves the team
+and is kept by session id; `claude --resume` of that session brings it back by itself. The boss is found like agy-ask
+finds it: the nearest `claude` process above this call, else the nearest `agy` with HOME = a profile. A session is the
+boss of one office: appointing it elsewhere closes its old office. Without a name, an office whose boss is another
+running session is never taken: in the home folder the next free "Terminal" office is used (or "Terminal 2", ... is
+opened), elsewhere it is refused; /boss OFFICE takes an office over on purpose (its old boss is replaced).
+Writes <agy root>/team.json (the file the office page uses; a running office re-reads it within a second).
+"""
+import argparse, os, re, sys, time
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import office_rules as R  # noqa: E402
+
+HOME = R.HOME
+ROOT = R.ROOT
+CLI = "cli"
+EMAIL = re.compile(r"[\w.%+-]+@[\w-]+(?:\.[\w-]+)+")
+
+
+def read(path, tail=False, n=256 * 1024):
+    try:
+        with open(path, "rb") as f:
+            if tail:
+                f.seek(max(0, os.path.getsize(path) - n))
+            return f.read(n).decode("utf8", "replace")
+    except OSError:
+        return ""
+
+
+def email_of(state):
+    """The Google account of a profile, from agy's logs (the office's test for "signed in")."""
+    def last(text):
+        found = None
+        for line in text.splitlines():
+            if "server_oauth" in line and "OAuth:" in line:
+                m = EMAIL.search(line)
+                found = m.group(0) if m else found
+        return found
+    e = last(read(os.path.join(state, "cli.log"), tail=True))
+    if e:
+        return e
+    try:
+        logs = sorted((n for n in os.listdir(os.path.join(state, "log")) if re.match(r"^cli-.*\.log$", n)), reverse=True)
+    except OSError:
+        return None
+    for name in logs[:20]:
+        e = last(read(os.path.join(state, "log", name)))
+        if e:
+            return e
+    return None
+
+
+def roles():
+    out = {}
+    for line in read(os.path.join(ROOT, "roles.conf")).splitlines():
+        p = line.split("#")[0].split()
+        if len(p) >= 2:
+            out[p[0]] = p[1]
+    return out
+
+
+def signed_in():
+    """[(acc, email)] of the profiles signed in to Google and not "off" in roles.conf, in natural order."""
+    r = roles()
+    try:
+        names = os.listdir(ROOT)
+    except OSError:
+        return []
+    out = []
+    for acc in sorted(names, key=lambda s: [int(x) if x.isdigit() else x for x in re.split(r"(\d+)", s)]):
+        state = os.path.join(ROOT, acc, ".gemini", "antigravity-cli")
+        if acc[:1] in "._" or not os.path.isdir(state) or r.get(acc) == "off":
+            continue
+        e = email_of(state)
+        if e:
+            out.append((acc, e))
+    return out
+
+
+def caller():
+    """The agent above this call: ("claude", pid, config dir name, cwd) or ("agy", pid, profile name, cwd), or None."""
+    pid = os.getppid()
+    while pid > 1:
+        try:
+            comm = open(f"/proc/{pid}/comm").read().strip()
+            env = dict(kv.split("=", 1) for kv in open(f"/proc/{pid}/environ", "rb").read().decode("utf8", "replace").split("\0") if "=" in kv)
+            cwd = os.readlink(f"/proc/{pid}/cwd")
+        except OSError:
+            return None
+        if comm == "claude":
+            conf = env.get("CLAUDE_CONFIG_DIR") or os.path.join(HOME, ".claude")
+            return "claude", pid, os.path.basename(conf.rstrip("/")), cwd
+        if comm == "agy":
+            h = os.path.realpath(env.get("HOME", ""))
+            if os.path.dirname(h) == os.path.realpath(ROOT):
+                return "agy", pid, os.path.basename(h), cwd
+        pid = int(open(f"/proc/{pid}/stat").read().rsplit(")", 1)[1].split()[1])
+    return None
+
+
+def under(path, folder):
+    return path == folder or path.startswith(folder.rstrip("/") + "/")
+
+
+def office_for(offices, folder):
+    """The office whose folder holds `folder`, the deepest one, or None."""
+    hits = [o for o in offices if o.get("folder") and under(folder, os.path.realpath(o["folder"]))]
+    return max(hits, key=lambda o: len(os.path.realpath(o["folder"])), default=None)
+
+
+def named(offices, name):
+    low = name.strip().lower()
+    return next((o for o in offices if str(o.get("id", "")).lower() == low), None) or \
+        next((o for o in offices if str(o.get("name", "")).lower() == low), None)
+
+
+def new_id(offices, folder):
+    base = re.sub(r"[^a-z0-9]+", "-", os.path.basename(folder).lower()).strip("-") or "office"
+    ids = {o.get("id") for o in offices}
+    return next(c for c in [base, *(f"{base}-{i}" for i in range(2, 1000))] if c not in ids)
+
+
+def is_me(boss, kind, pid, account):
+    if not isinstance(boss, dict):
+        return False
+    if kind == "agy":
+        return boss.get("kind") == "agy" and (boss.get("acc") or boss.get("account")) == account
+    return boss.get("kind") != "agy" and boss.get("pid") == pid
+
+
+def label(o):
+    return f'"{o.get("name") or o.get("id")}" ({o.get("id")})'
+
+
+def ago(ms):
+    m = max(0, int(time.time() - ms / 1000) // 60)
+    return f"{m} min ago" if m < 60 else f"{m // 60} h ago" if m < 48 * 60 else f"{m // 1440} days ago"
+
+
+def show_list(who):
+    t = R.load_team()
+    if not t["offices"]:
+        print("No offices open.")
+    for o in t["offices"]:
+        b = o.get("boss")
+        mine = "  <- this session" if who and is_me(b, who[0], who[1], who[2]) else ""
+        if isinstance(b, dict):
+            where = f"agy {b.get('acc')}" if b.get("kind") == "agy" else f"pid {b.get('pid')}"
+            boss = f"{b.get('name') or b.get('id')} ({where})"
+        else:
+            boss = "none (close it with /offices rm, or take it with /boss)"
+        ws = o.get("workers")
+        print(f"office {label(o)}: {o.get('folder') or 'any folder'}{mine}")
+        print(f"  boss: {boss}")
+        print(f"  workers: {'any' if ws is None else ', '.join(ws) or 'none'}")
+    ended = R.read_json(R.ENDED, {}).get("ended") or []
+    if ended:
+        print("\nEnded with their sessions (`claude --resume <session>` brings the office back):")
+        for e in reversed(ended[-10:]):
+            o = e.get("office") or {}
+            print(f"  {label(o)} {o.get('folder') or 'any folder'}  session {e.get('sessionId')}  {ago(e.get('endedAt') or 0)}")
+
+
+def remove(arg):
+    with R.team_lock():
+        t = R.load_team()
+        o = named(t["offices"], arg)
+        if o:
+            t["offices"].remove(o)
+            R.write_json(R.TEAM, t)
+            print(f"closed the office {label(o)}")
+            return
+        ended = R.read_json(R.ENDED, {}).get("ended") or []
+
+        def match(e):
+            sid = str(e.get("sessionId") or "")
+            return sid == arg or (len(arg) >= 8 and sid.startswith(arg)) or named([e.get("office") or {}], arg) is not None
+        keep = [e for e in ended if not match(e)]
+        if len(keep) == len(ended):
+            sys.exit(f'office-boss: no office "{arg}" (see /offices)')
+        R.write_json(R.ENDED, {"ended": keep})
+        print(f"forgot {len(ended) - len(keep)} ended office(s): resuming will not bring it back")
+
+
+MANY = 9  # the most sessions of an account "clone" adds at once
+
+HELP = """Commands of an office (typed in a Claude Code session):
+  /boss [office|off]            make this session the boss of the office for its folder (never one another running session leads; a new office if there is
+                                none), or of the named office; off steps down and closes it.  e.g. /boss game
+  /workers                      the office's workers by account, and the accounts you can add or clone
+  /workers add <account>...     accounts not in the office yet.  e.g. /workers add acc3 claude:.claude-work
+  /workers clone <account> [N]  N more sessions (default 1) of an account already in the office, or of your own
+                                Claude account; they share its quota.  e.g. /workers clone claude 3
+  /workers rm <id>...           acc2#2 = that session; acc2 = the account with all its sessions; all = everyone.
+                                e.g. /workers rm acc2#2
+  /quota                        every worker's 5-hour and weekly use now; in a boss session, workers near their
+                                limit leave the office and come back after their reset
+  /offices [rm X]               the open offices and the ended ones a resume brings back; rm closes an office or
+                                forgets an ended one.  e.g. /offices rm game
+  /office                       this list
+For the boss agent (each job is a fresh conversation that returns only the answer; skill agy-orchestrator):
+  agy-ask <acc> "<job>"         a job for an Antigravity worker.  e.g. agy-ask acc2 "<job>" --role research --mode plan
+  claude-ask <id> "<job>"       a job for a Claude Code worker; a clone is addressed by its listed id.
+                                e.g. claude-ask claude#2 "<job>" --role review --mode plan"""
+
+
+def worker_id(name):
+    """"acc3" / "3" -> "acc3"; "claude" -> "claude:.claude" (the default account); "claude:.claude-work" /
+    ".claude-work" -> "claude:.claude-work"; a clone keeps its number ("3#2" -> "acc3#2"); None = no such account."""
+    n, clone = R.split_worker(name.strip())
+    if n.isdigit():
+        n = f"acc{n}"
+    if n == "claude" and not os.path.isdir(os.path.join(ROOT, n, ".gemini")):
+        n = "claude:.claude"
+    if n.startswith("claude:") or n.startswith("."):
+        d = n[len("claude:"):] if n.startswith("claude:") else n
+        acc = f"claude:{d}" if d and "/" not in d and os.path.isdir(os.path.join(HOME, d)) else None
+    else:
+        acc = n if n and os.path.isdir(os.path.join(ROOT, n, ".gemini")) else None
+    return acc and (f"{acc}#{clone}" if clone > 1 else acc)
+
+
+def next_clone(account, taken):
+    """The first free clone id of an account: "acc2#2", then "acc2#3"…"""
+    return next(c for c in (f"{account}#{i}" for i in range(2, 10000)) if c not in taken)
+
+
+def short(account):
+    """An account as the user types it: "claude" for the default Claude account."""
+    return "claude" if account == "claude:.claude" else account
+
+
+def claude_accounts():
+    """["claude:.claude", "claude:.claude-work"…]: the Claude Code config folders of the home folder, as Habblaud finds
+    them (a ".claude*" folder holding projects/ or sessions/), the default account first."""
+    try:
+        names = [n for n in os.listdir(HOME) if n.startswith(".claude")]
+    except OSError:
+        return []
+    found = [n for n in names if any(os.path.isdir(os.path.join(HOME, n, d)) for d in ("projects", "sessions"))]
+    return [f"claude:{n}" for n in sorted(found, key=lambda n: (n != ".claude", n))]
+
+
+def describe(w, own, emails):
+    """One worker in /boss's list: what it is, and for a clone, whose session."""
+    account, n = R.split_worker(w)
+    notes = ["Claude Code" if account.startswith("claude:") else emails.get(account, "?")]
+    if account == own:
+        notes.append("same account as the boss")
+    elif n > 1:
+        notes.append(f"another session of {account}")
+    return f"{w} ({', '.join(notes)})"
+
+
+def account_arg(name, emails, kind, own):
+    """The account a word of /workers add or clone names. Refused: an unknown account, one session of an account
+    ("acc2#2"), an Antigravity boss's own account."""
+    w = worker_id(name)
+    if not w:
+        sys.exit(f"office-boss: no account {name} (Antigravity: {', '.join(emails) or 'none signed in'}; Claude Code: claude, or claude:<config folder>)")
+    acct, n = R.split_worker(w)
+    if n > 1:
+        sys.exit(f"office-boss: {w} names one session, not an account: /workers clone {short(acct)}")
+    if kind == "agy" and acct == own:
+        sys.exit(f"office-boss: {acct} is your own account: an Antigravity boss is known by its profile, so its account cannot also work for it")
+    return acct
+
+
+def show_workers(office, ws, benched, kind, own, emails):
+    """What /workers prints: the sessions by account, then the accounts that can be added and the ones that can be cloned."""
+    print(f"Workers of the office {label(office)}:" if ws else f"The office {label(office)} has no workers.")
+    groups = {}
+    for w in ws:
+        groups.setdefault(R.account_of(w), []).append(w)
+    for acct, sessions in groups.items():
+        claude = acct.startswith("claude:")
+        print(f"  {acct} ({'Claude Code' if claude else emails.get(acct, '?')}{', your own account' if acct == own else ''})")
+        # agy's processes are seen per profile: every session of an account shows the account's state
+        state = "" if claude else ": working now" if R.agy_running(acct) else ": free" if acct in emails else f": not signed in (agy-as {acct})"
+        for w in sorted(sessions, key=lambda w: R.split_worker(w)[1]):
+            print(f"    {w}{state}")
+    if benched:
+        print(f"Left out, near their quota (/quota checks again): {', '.join(benched)}")
+    here = list(dict.fromkeys(R.account_of(w) for w in [*ws, *benched]))
+    new = [a for a in [*emails, *claude_accounts()] if a not in here and a != own]
+    if new:
+        print("Accounts you can add: " + ", ".join(f"{a} ({emails[a]})" if a in emails else short(a) for a in new) + f"  ->  /workers add {short(new[0])}")
+    mine = [own] if kind != "agy" and own not in here else []
+    clones = [*here, *mine]
+    if clones:
+        print("Accounts you can clone (one more session): " + ", ".join(short(a) + (" (your own)" if a == own else "") for a in clones)
+              + f"  ->  /workers clone {short(clones[0])} [N]")
+
+
+def workers(words, who):
+    """/workers: list this session's office's workers, add accounts, clone a session of one, or remove some."""
+    kind, pid, account, _ = who
+    own = account if kind == "agy" else f"claude:{account}"
+    emails = dict(signed_in())
+    verb = words[0] if words else "list"
+    args = [n.strip() for w in words[1:] for n in w.split(",") if n.strip()]
+    if verb not in ("list", "add", "clone", "rm"):
+        sys.exit(f'office-boss: /workers has no "{verb}": it takes add <account>, clone <account> [N] or rm <id> (/office lists every command)')
+    with R.team_lock():
+        t = R.load_team()
+        office = next((o for o in t["offices"] if is_me(o.get("boss"), kind, pid, account)), None)
+        if not office:
+            sys.exit("office-boss: this session is not a boss: type /boss first")
+        ws = [w for w in office.get("workers") or [] if isinstance(w, str)]
+        benched = [w for w in office.get("benched") or [] if isinstance(w, str)]
+        here = {R.account_of(w) for w in [*ws, *benched]}
+        done = []
+        if verb == "add":
+            if not args:
+                sys.exit("office-boss: /workers add needs an account that is not in the office yet (e.g. acc3 or 3, claude:.claude-work)")
+            for n in args:
+                m = re.fullmatch(r"(.*?)\*(\d+)", n)
+                if m:
+                    sys.exit(f"office-boss: {n}: add takes accounts only; for {m.group(2)} more sessions of an account: /workers clone {m.group(1)} {m.group(2)}")
+                acct = account_arg(n, emails, kind, own)
+                if acct in done:  # named twice
+                    continue
+                if acct == own or acct in here:
+                    why = "your own account" if acct == own else "already in the office"
+                    sys.exit(f"office-boss: {acct} is {why}: for one more session of it, /workers clone {short(acct)}")
+                ws.append(acct)
+                here.add(acct)
+                done.append(acct)
+        elif verb == "clone":
+            if not args or len(args) > 2 or (len(args) == 2 and not args[1].isdigit()):
+                sys.exit("office-boss: /workers clone takes one account and how many sessions (1 if left out), e.g. /workers clone acc2 3")
+            times = int(args[1]) if len(args) == 2 else 1
+            if not 1 <= times <= MANY:
+                sys.exit(f"office-boss: /workers clone {args[0]} {times}: between 1 and {MANY} sessions at once")
+            acct = account_arg(args[0], emails, kind, own)
+            if acct != own and acct not in here:
+                sys.exit(f"office-boss: {acct} is not in the office yet: /workers add {short(acct)} first")
+            taken = {*ws, *benched}
+            for _ in range(times):
+                # the boss is the first session of its own account; elsewhere the plain id comes first when it is free
+                new = acct if acct != own and acct not in taken else next_clone(acct, taken)
+                ws.append(new)
+                taken.add(new)
+                done.append(new)
+        elif verb == "rm":
+            if not args:
+                sys.exit("office-boss: /workers rm needs ids (acc2#2 = that session, acc2 = the account with all its sessions) or all")
+            for w in dict.fromkeys(worker_id(n) or n for n in args):  # (an id named twice counts once)
+                one = R.split_worker(w)[1] > 1  # a session id: that session; an account: all its sessions
+                gone = [x for x in [*ws, *benched] if w == "all" or (x == w if one else R.account_of(x) == w)]
+                if not gone and "all" not in args:
+                    sys.exit(f"office-boss: {w} is not in this office (workers: {', '.join([*ws, *benched]) or 'none'})")
+                ws, benched = [x for x in ws if x not in gone], [x for x in benched if x not in gone]
+                done += gone
+        if verb != "list":
+            office["workers"] = ws
+            if benched:
+                office["benched"] = benched
+            else:
+                office.pop("benched", None)
+            R.write_json(R.TEAM, t)
+    if verb != "list":
+        print({"add": "Added", "clone": "Cloned", "rm": "Removed"}[verb] + f": {', '.join(done) or 'nothing'}")
+    show_workers(office, ws, benched, kind, own, emails)
+    if verb in ("add", "clone"):
+        print('Give a job: agy-ask <id> "<job>" (Antigravity) or claude-ask <id> "<job>" (Claude Code), with the worker id as listed.')
+
+
+def pct(w):
+    if not isinstance(w, dict) or not isinstance(w.get("utilization"), (int, float)):
+        return "  -  "
+    now, reset = time.time() * 1000, R.reset_ms(w)
+    if (reset or now + 1) <= now:
+        return "  0% (reset)"
+    left = ""
+    if reset:
+        m = int((reset - now) / 60000)
+        left = f" resets in {m // 60}h{m % 60:02d}" if m < 48 * 60 else f" resets in {m // 1440}d"
+    return f"{w['utilization']:3.0f}%{left}"
+
+
+def quota(who):
+    """/quota: every worker's use now (agy's /usage, no tokens; Claude accounts from the file the Habblaud mod keeps),
+    and for this session's office: workers near the quota leave it, benched ones whose quota reset come back."""
+    from concurrent.futures import ThreadPoolExecutor
+    avail = signed_in()
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        fresh = dict(zip([acc for acc, _ in avail], ex.map(lambda acc: R.fetch_agy_usage(acc[0]), avail)))
+    office = None
+    if who:
+        office = next((o for o in R.load_team()["offices"] if is_me(o.get("boss"), who[0], who[1], who[2])), None)
+    stop = R.quota_stop(office) if office else 90
+    rows = [(acc, email, fresh.get(acc)) for acc, email in avail]
+    try:
+        names = sorted(n[:-5] for n in os.listdir(R.USAGE_DIR) if n.endswith(".json") and not n.startswith("agy:"))
+    except OSError:
+        names = []
+    me = f"claude:{who[2]}" if who and who[0] == "claude" else ""
+    rows += [(f"claude:{n}", "Claude Code" + (" (this session's account)" if f"claude:{n}" == me else ""),
+              R.usage_file(f"claude:{n}")) for n in names]
+    print(f"{'worker':22} {'5 hours':24} {'week':24}")
+    near = []
+    for w, email, u in rows:
+        used = R.used_pct(u)
+        flag = "  ⚠ near the limit" if used is not None and used >= stop else "" if u else "  (unknown)"
+        if used is not None and used >= stop:
+            near.append(w)
+        print(f"{w:22} {pct((u or {}).get('five_hour')):24} {pct((u or {}).get('seven_day')):24}{flag}  {email}")
+    if not office:
+        return
+    back = []
+    with R.team_lock():
+        t = R.load_team()
+        o = next((x for x in t["offices"] if x.get("id") == office.get("id")), None)
+        if o is not None and isinstance(o.get("workers"), list):
+            benched = set(o.get("benched") or [])
+            # by account: the sessions (clones) of an account share its quota, so they leave and come back together
+            for w in sorted(benched):
+                acc = R.account_of(w)
+                if acc not in near and R.used_pct(fresh.get(acc) or R.usage_file(acc)) is not None:
+                    benched.discard(w)
+                    if w not in o["workers"]:
+                        o["workers"].append(w)
+                        back.append(w)
+            out = [w for w in o["workers"] if R.account_of(w) in near]
+            o["workers"] = [w for w in o["workers"] if w not in out]
+            o["benched"] = sorted(benched | set(out))
+            if not o["benched"]:
+                o.pop("benched")
+            R.write_json(R.TEAM, t)
+            if out:
+                print(f"\nLeft the office {label(o)} until their quota resets (limit {stop}%): {', '.join(out)}")
+    if back:
+        print(f"Back in the office: {', '.join(back)}")
+    print(f"Workers of the office now: {', '.join((o or {}).get('workers') or []) or 'none'}")
+
+
+def appoint(a, who):
+    kind, pid, account, cwd = who
+    avail = signed_in()
+    emails = dict(avail)
+    if a.workers:
+        workers = [w.strip() for w in a.workers.split(",") if w.strip()]
+        bad = [w for w in workers if R.account_of(w) not in emails and not w.startswith("claude:")]
+        if bad:
+            sys.exit(f"office-boss: not signed-in workers: {', '.join(bad)} (signed in: {', '.join(emails) or 'none'})")
+    else:
+        workers = [acc for acc, _ in avail]
+
+    def near(w, office):
+        used = R.used_pct(R.usage_file(w))
+        return used is not None and used >= R.quota_stop(office)
+
+    def taken(o):
+        """Another session, still running, is this office's boss."""
+        b = o.get("boss")
+        return R.boss_alive(b) and not is_me(b, kind, pid, account)
+
+    with R.team_lock():
+        t = R.load_team()
+        offices = t["offices"]
+        if a.office:
+            office = named(offices, a.office)
+            if not office:
+                listed = ", ".join(label(o) for o in offices) or "none"
+                sys.exit(f'office-boss: no office "{a.office}" (offices: {listed}); run /boss with no name to open one for this folder (/office lists every command)')
+        else:
+            folder = os.path.realpath(os.path.expanduser(a.folder or cwd))
+            if not os.path.isdir(folder):
+                sys.exit(f"office-boss: not a folder: {folder}")
+            office = None if a.folder else office_for(offices, folder)
+            if office and taken(office):
+                # never take a running boss's office by default (two terminals both typing /boss): name it to take it over
+                sys.exit(f"office-boss: the office {label(office)} already has a boss in another running session; "
+                         f'take it over with /boss {office.get("id")}, or open one for another folder with /boss --folder DIR')
+            if not office and folder in (os.path.realpath(HOME), "/"):
+                # the home folder: the first free "Terminal" office, or a new one ("Terminal 2", ...) beside the busy ones
+                clis = [o for o in offices if o.get("id") == CLI or re.fullmatch(rf"{CLI}-\d+", str(o.get("id", "")))]
+                office = next((o for o in clis if not taken(o)), None)
+                if not office:
+                    n = next(i for i in range(1, 1000) if (CLI if i == 1 else f"{CLI}-{i}") not in {o.get("id") for o in offices})
+                    office = {"id": CLI if n == 1 else f"{CLI}-{n}", "name": "Terminal" if n == 1 else f"Terminal {n}",
+                              "folder": "", "workers": workers, "boss": None}
+                    offices.append(office)
+            elif not office:
+                same = next((o for o in offices if o.get("folder") and os.path.realpath(o["folder"]) == folder), None)
+                office = same or {"id": new_id(offices, folder), "name": os.path.basename(folder) or folder,
+                                  "folder": folder, "workers": workers, "boss": None}
+                if not same:
+                    offices.append(office)
+        # every signed-in worker each time (or --workers); what was added by hand is kept: Claude workers, and clones
+        # (one more session of an account) while their account is still signed in; near the quota = benched
+        before = [w for w in [*(office.get("workers") or []), *(office.get("benched") or [])] if isinstance(w, str)]
+        keep = [w for w in before if w.startswith("claude:") or (R.split_worker(w)[1] > 1 and R.account_of(w) in emails)] if not a.workers else []
+        workers = list(dict.fromkeys([*workers, *keep]))
+        if kind == "agy":  # an Antigravity boss is known by its profile: its own account never works for it
+            workers = [w for w in workers if R.account_of(w) != account]
+        office["workers"] = [w for w in workers if not near(w, office)]
+        benched = [w for w in workers if near(w, office)]
+        if benched:
+            office["benched"] = benched
+        else:
+            office.pop("benched", None)
+        # one office per session: its old office closes
+        old = [o for o in offices if o is not office and is_me(o.get("boss"), kind, pid, account)]
+        t["offices"] = [o for o in offices if o not in old]
+        was = office.get("boss")
+        replaced = was if R.boss_alive(was) and not is_me(was, kind, pid, account) else None
+        if kind == "agy":
+            office["boss"] = {"kind": "agy", "id": f"agy:{account}", "acc": account, "name": a.name, "at": int(time.time() * 1000)}
+        else:
+            office["boss"] = R.claude_boss(pid, account, a.name)
+        R.write_json(R.TEAM, t)
+
+    ws = office.get("workers")
+    print(f'You are now the boss of the office {label(office)}; folder: {office.get("folder") or "any (no limit)"}.')
+    if office.get("benched"):
+        print(f"Left out, near their quota (/quota checks again): {', '.join(office['benched'])}")
+    for o in old:
+        print(f"(your previous office {label(o)} closed)")
+    if replaced:
+        print(f"(replaced the previous boss {replaced.get('name') or replaced.get('id')})")
+    if ws is None:
+        print("Workers: any registered worker.")
+    elif ws:
+        own = account if kind == "agy" else f"claude:{account}"
+        print("Workers: " + ", ".join(describe(w, own, emails) if w in emails or R.account_of(w) == own or R.split_worker(w)[1] > 1 else w for w in ws))
+    else:
+        print("Workers: none yet (add accounts with /workers add <account>, e.g. acc1, or in the office page; /office lists every command).")
+    if ws is None or ws:
+        limit = " Workers edit only inside the office folder." if office.get("folder") else ""
+        print('Give a job: agy-ask <id> "<job>" (Antigravity) or claude-ask <id> "<job>" (a claude: worker), with the id as listed; '
+              f"each call is a fresh conversation that returns only the answer.{limit} See the skill agy-orchestrator.")
+    print("The office closes when this session ends; resuming the session brings it back.")
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("words", nargs="*", help='an office id or name; "off"; "list"; "rm <office or ended session id>"; "workers [add|clone|rm …]"; "quota"; "help"')
+    ap.add_argument("--folder", default="")
+    ap.add_argument("--workers", default="")
+    ap.add_argument("--name", default="Boss")
+    ap.add_argument("--off", action="store_true")
+    a = ap.parse_args()
+    words = a.words[1:] or ["list"] if a.words[:1] == ["offices"] else a.words  # /offices [rm X]
+    a.office, a.target = (words + ["", ""])[:2]
+    if len(words) > 2 and a.office != "workers":
+        sys.exit(f"office-boss: too many words: {' '.join(words)} (/office lists every command)")
+    if a.office == "help":
+        return print(HELP)
+    who = caller()
+    for n in R.tidy(who[1] if who and who[0] == "claude" else None, who[2] if who else ".claude"):
+        print(n)
+    if a.office == "quota":
+        return quota(who)
+    if a.office == "workers":
+        if not who:
+            sys.exit("office-boss: no Claude Code or agy session above this call")
+        return workers(words[1:], who)
+    if a.office == "list":
+        return show_list(who)
+    if a.office == "rm":
+        if not a.target:
+            sys.exit("office-boss: rm needs an office (see /offices)")
+        return remove(a.target)
+    if not who:
+        sys.exit("office-boss: no Claude Code or agy session above this call (run it from the session that should be boss)")
+    if a.off or a.office == "off":
+        kind, pid, account, _ = who
+        with R.team_lock():
+            t = R.load_team()
+            mine = [o for o in t["offices"] if is_me(o.get("boss"), kind, pid, account)]
+            t["offices"] = [o for o in t["offices"] if o not in mine]
+            R.write_json(R.TEAM, t)
+        print("no longer a boss; closed: " + (", ".join(label(o) for o in mine) if mine else "nothing (this session was not a boss)"))
+        return
+    appoint(a, who)
+
+
+if __name__ == "__main__":
+    # --soft (the slash commands): a refusal is printed and exits 0, since Claude Code drops a command whose shell fails
+    soft = "--soft" in sys.argv
+    if soft:
+        sys.argv.remove("--soft")
+    try:
+        main()
+    except SystemExit as e:
+        if soft and isinstance(e.code, str):
+            print(e.code)
+            sys.exit(0)
+        raise
